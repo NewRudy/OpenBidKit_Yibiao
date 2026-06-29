@@ -2158,34 +2158,23 @@ async function runFinalOutlineGate({ aiService, agentService, payload, outline, 
     finalReview = await reviewFinalOutline(aiService, context, log);
   } catch (error) {
     assertRecoverableOutlineError(error, RECOVERABLE_FINAL_REVIEW_ERRORS);
-    finalReview = createSyntheticFinalReview('最终目录审核结果格式无效，跳过审核 JSON 后由 Agent 自主审查并修复', error);
-    const repaired = await repairFinalOutlineWithAgent(agentService, {
-      ...context,
-      finalReview,
-      recoveryReason: finalReview.suggestions.join('；'),
-      startLogMessage: `最终目录审核结果格式无效，已切换到 Agent 自主审查并修复目录：${getErrorMessage(error)}`,
-    }, log);
-    return { outline: repaired.outline, groups: repaired.groups || context.groups };
+    log(`最终目录审核结果格式无效，已跳过阻断式审核：${getErrorMessage(error)}`, 99);
+    return { outline, groups: context.groups };
   }
   if (finalReview.passed) {
     try {
       validateFinalOutline(context);
     } catch (error) {
-      const validationReview = createSyntheticFinalReview('最终目录程序校验未通过', error);
-      const repaired = await repairFinalOutlineWithAgent(agentService, {
-        ...context,
-        finalReview: validationReview,
-        recoveryReason: validationReview.suggestions.join('；'),
-        startLogMessage: `最终目录审核通过但程序校验未通过，已切换到 Agent 修复目录：${getErrorMessage(error)}`,
-      }, log);
-      return { outline: repaired.outline, groups: repaired.groups || context.groups };
+      log(`最终目录程序校验未通过，已保留当前目录供人工复核：${getErrorMessage(error)}`, 99);
+      return { outline, groups: context.groups };
     }
     log('最终目录审核通过，准备保存目录。', 99);
     return { outline, groups: context.groups };
   }
 
-  const repaired = await repairFinalOutlineWithAgent(agentService, { ...context, finalReview, recoveryReason: finalReview.suggestions.join('；') }, log);
-  return { outline: repaired.outline, groups: repaired.groups || context.groups };
+  const suggestions = (finalReview.suggestions || []).filter(Boolean).slice(0, 3).join('；');
+  log(`最终目录审核未通过，已按当前配置跳过 Agent 修复并保存当前目录${suggestions ? `；建议复核：${suggestions}` : '。'}`, 99);
+  return { outline, groups: context.groups };
 }
 
 async function extractRequirementGroups(aiService, payload, suggestions, log) {
