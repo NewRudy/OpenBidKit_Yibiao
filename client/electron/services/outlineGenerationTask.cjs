@@ -2535,10 +2535,16 @@ async function enhanceOutlineWithKnowledgeAdditions(aiService, payload, outline,
   }
 }
 
-async function runOutlineGenerationTask({ aiService, agentService, workspaceStore, knowledgeBaseService, updateTask, payload }) {
+async function runOutlineGenerationTask({ aiService, agentService, workspaceStore, knowledgeBaseService, updateTask, payload, taskControl }) {
   let logs = ['开始生成目录。'];
   let currentProgress = 5;
+  const throwIfCancelled = () => {
+    if (taskControl?.throwIfCancelled) {
+      taskControl.throwIfCancelled();
+    }
+  };
   function log(message, progress = currentProgress) {
+    throwIfCancelled();
     currentProgress = Math.max(currentProgress, Math.min(progress, 99));
     logs = [...logs, message];
     const technicalPlan = workspaceStore.updateTechnicalPlan({ outlineGenerationTask: updateTask({ status: 'running', progress: currentProgress, logs }) });
@@ -2587,6 +2593,7 @@ async function runOutlineGenerationTask({ aiService, agentService, workspaceStor
       throw new Error('请先上传原方案，再生成目录');
     }
     oldOutline = await extractOriginalOutline(aiService, agentService, baseTaskPayload, originalPlanMarkdown, log, { sourceLabel: '原方案' });
+    throwIfCancelled();
   } else if (useCustomOutline) {
     if (!storedPlan.customOutlineFile) {
       throw new Error('请先上传自有大纲，再生成目录');
@@ -2599,8 +2606,10 @@ async function runOutlineGenerationTask({ aiService, agentService, workspaceStor
       throw new Error('请先上传自有大纲，再生成目录');
     }
     oldOutline = await extractOriginalOutline(aiService, agentService, baseTaskPayload, customOutlineMarkdown, log, { sourceLabel: '自有大纲' });
+    throwIfCancelled();
   }
 
+  throwIfCancelled();
   technicalPlan = workspaceStore.updateTechnicalPlan({
     outlineData: null,
     contentGenerationTask: undefined,
@@ -2633,15 +2642,18 @@ async function runOutlineGenerationTask({ aiService, agentService, workspaceStor
       return;
     } else {
       outline = await expansionComplementWorkflow(aiService, taskPayload, oldOutline, log);
+      throwIfCancelled();
     }
   } else {
     const alignedResult = await alignedWorkflow(aiService, agentService, taskPayload, log);
+    throwIfCancelled();
     outline = alignedResult.outline;
     groups = alignedResult.groups || [];
   }
 
   const knowledgeItems = loadOutlineKnowledgeItems(knowledgeBaseService, referenceKnowledgeDocumentIds, log);
   outline = await enhanceOutlineWithKnowledgeAdditions(aiService, taskPayload, outline, knowledgeItems, log);
+  throwIfCancelled();
   const finalResult = await runFinalOutlineGate({
     aiService,
     agentService,
@@ -2653,6 +2665,7 @@ async function runOutlineGenerationTask({ aiService, agentService, workspaceStor
     outlineExpansionMode,
     log,
   });
+  throwIfCancelled();
   outline = finalResult.outline;
   technicalPlan = workspaceStore.updateTechnicalPlan({
     outlineData: { ...outline, project_overview: overview },

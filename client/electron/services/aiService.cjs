@@ -211,22 +211,44 @@ function createAbortError() {
   return markAiRequestError(error, { retryable: true });
 }
 
-function createOperationTimeout(timeoutMs) {
+function createOperationTimeout(timeoutMs, externalSignal) {
   const controller = new AbortController();
+  let cleanupExternalSignal = () => {};
+  const abortWithReason = (reason) => {
+    if (!controller.signal.aborted) {
+      controller.abort(reason || new Error('AI 请求已取消'));
+    }
+  };
   const timeoutPromise = new Promise((_resolve, reject) => {
     const timer = setTimeout(() => {
-      controller.abort();
+      abortWithReason(createAbortError());
       reject(createAbortError());
     }, timeoutMs);
     controller.signal.addEventListener('abort', () => clearTimeout(timer), { once: true });
   });
+
+  if (externalSignal) {
+    const onExternalAbort = () => abortWithReason(externalSignal.reason || new Error('AI 请求已取消'));
+    if (externalSignal.aborted) {
+      onExternalAbort();
+    } else {
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+      cleanupExternalSignal = () => {
+        try { externalSignal.removeEventListener('abort', onExternalAbort); } catch {}
+      };
+    }
+  }
 
   return {
     signal: controller.signal,
     run(promise) {
       return Promise.race([promise, timeoutPromise]);
     },
+    abort(reason) {
+      abortWithReason(reason);
+    },
     clear() {
+      cleanupExternalSignal();
       controller.abort();
     },
   };
@@ -700,7 +722,7 @@ function normalizeJsonPayload(request, parsed) {
   return normalized;
 }
 
-async function repairJsonResponse(app, config, invalidContent, issues, temperature, responseFormat, progressCallback, progressLabel, repairMessagesBuilder, logTitle) {
+async function repairJsonResponse(app, config, invalidContent, issues, temperature, responseFormat, progressCallback, progressLabel, repairMessagesBuilder, logTitle, signal) {
   await emitProgress(progressCallback, `${progressLabel}格式校验失败，正在基于当前结果进行修复。`);
   return chatWithConfig(app, config, {
     messages: repairMessagesBuilder
@@ -709,6 +731,7 @@ async function repairJsonResponse(app, config, invalidContent, issues, temperatu
     temperature,
     response_format: responseFormat,
     logTitle: logTitle ? `${logTitle}修复` : `${progressLabel}修复`,
+    signal,
   });
 }
 
@@ -735,6 +758,7 @@ async function parseOrRepairJsonResponseWithConfig(app, config, request, content
         progressLabel,
         request.repairMessagesBuilder,
         logTitle,
+        request.signal,
       );
       return normalizeJsonPayload(request, parseJsonContent(repairedContent));
     } catch {
@@ -761,6 +785,7 @@ async function collectJsonResponseWithConfig(app, config, request) {
       timeout_ms: request.timeout_ms,
       timeout_message: request.timeout_message,
       logTitle,
+      signal: request.signal,
     });
 
     try {
@@ -782,6 +807,7 @@ async function collectJsonResponseWithConfig(app, config, request) {
           progressLabel,
           request.repairMessagesBuilder,
           logTitle,
+          request.signal,
         );
         const repairedParsed = parseJsonContent(repairedContent);
         return normalizeJsonPayload(request, repairedParsed);
@@ -1276,7 +1302,7 @@ async function chatWithConfig(app, config, request) {
   let errorMessage = '';
   let analyticsTracked = false;
   const timeoutMs = normalizeRequestTimeoutMs(request);
-  const timeout = createOperationTimeout(timeoutMs);
+  const timeout = createOperationTimeout(timeoutMs, request.signal);
 
   try {
     writeAiLog(app, config, {
@@ -1734,7 +1760,7 @@ function createAiService({ app, configStore }) {
     return String(request?.queueScopeId || request?.queue_scope_id || '').trim();
   }
 
-  function withQueueScope(request, queueScopeId) {
+  function withQueueScope(request, queueScopeId, signal) {
     const normalizedScopeId = String(queueScopeId || '').trim();
     if (!normalizedScopeId || !request || typeof request !== 'object') {
       return request;
@@ -1743,6 +1769,7 @@ function createAiService({ app, configStore }) {
     return {
       ...request,
       queueScopeId: getQueueScopeId(request) || normalizedScopeId,
+      signal: request.signal || signal,
     };
   }
 
@@ -1816,23 +1843,23 @@ function createAiService({ app, configStore }) {
       return onTextTokenStatsChanged(listener);
     },
 
-    withQueueScope(scopeId) {
+    withQueueScope(scopeId, signal) {
       return {
         ...service,
         chat(request) {
-          return service.chat(withQueueScope(request, scopeId));
+          return service.chat(withQueueScope(request, scopeId, signal));
         },
         requestJson(request) {
-          return service.requestJson(withQueueScope(request, scopeId));
+          return service.requestJson(withQueueScope(request, scopeId, signal));
         },
         collectJsonResponse(request) {
-          return service.collectJsonResponse(withQueueScope(request, scopeId));
+          return service.collectJsonResponse(withQueueScope(request, scopeId, signal));
         },
         parseJsonResponseContent(request, content) {
-          return service.parseJsonResponseContent(withQueueScope(request, scopeId), content);
+          return service.parseJsonResponseContent(withQueueScope(request, scopeId, signal), content);
         },
         generateImage(request) {
-          return service.generateImage(withQueueScope(request, scopeId));
+          return service.generateImage(withQueueScope(request, scopeId, signal));
         },
       };
     },

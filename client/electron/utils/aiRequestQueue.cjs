@@ -78,6 +78,9 @@ function createAiRequestQueue(options = {}) {
     } catch (error) {
       if (isRetryableAiRequestError(error) && job.attempts < AI_REQUEST_MAX_ATTEMPTS) {
         job.attempts += 1;
+        if (rejectIfPaused(job)) {
+          return;
+        }
         scheduleRetry(job);
       } else {
         job.reject(error);

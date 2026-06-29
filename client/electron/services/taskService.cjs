@@ -125,6 +125,17 @@ function copyPatchFields(target, source, fields) {
 }
 
 const INTERRUPTED_SECTION_ERROR = '上次生成被中断，请继续生成。';
+const TASK_CANCELLED_CODE = 'YIBIAO_TASK_CANCELLED';
+
+function createTaskCancelledError(message = '任务已取消') {
+  const error = new Error(message);
+  error.code = TASK_CANCELLED_CODE;
+  return error;
+}
+
+function isTaskCancelledError(error) {
+  return error?.code === TASK_CANCELLED_CODE || error?.name === 'AbortError' || String(error?.message || '').includes('任务已取消');
+}
 
 function collectLeafItems(items) {
   return (items || []).flatMap((item) => item?.children?.length ? collectLeafItems(item.children) : [item]);
@@ -479,11 +490,23 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
     activeTasks.set(type, task);
     const taskField = getTaskField(type);
     let currentTask = task;
+    const abortController = new AbortController();
     const taskControl = {
       queueScopeId,
+      abortController,
       pauseRequested: false,
+      cancelRequested: false,
+      cancelMessage: '',
       isPauseRequested() {
         return this.pauseRequested;
+      },
+      isCancelRequested() {
+        return this.cancelRequested;
+      },
+      throwIfCancelled() {
+        if (this.cancelRequested || this.abortController.signal.aborted) {
+          throw createTaskCancelledError(this.cancelMessage || '任务已取消');
+        }
       },
       requestPause() {
         this.pauseRequested = true;
@@ -495,10 +518,29 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
         emit(pausingTask, buildSnapshot(definition, state, pausingTask));
         return pausingTask;
       },
+      requestCancel(message = '任务已取消，可重新开始。') {
+        this.cancelRequested = true;
+        this.cancelMessage = message;
+        if (!this.abortController.signal.aborted) {
+          this.abortController.abort(createTaskCancelledError(message));
+        }
+        const currentLogs = Array.isArray(currentTask.logs) ? currentTask.logs : [];
+        const nextLogs = currentLogs.includes(message) ? currentLogs : [...currentLogs, message];
+        if (currentTask.status === 'error' && currentTask.error === message) {
+          return currentTask;
+        }
+        const canceledTask = updateTask({ status: 'error', error: message, logs: nextLogs, pause_requested: false });
+        const state = taskField ? updateWorkspaceState(definition, { [taskField]: canceledTask }) : loadWorkspaceState(definition);
+        emit(canceledTask, buildSnapshot(definition, state, canceledTask));
+        return canceledTask;
+      },
     };
     activeTaskControls.set(type, taskControl);
 
     const updateTask = (partial, workspaceState, eventPatch) => {
+      if (taskControl.cancelRequested && partial.status !== 'error') {
+        throw createTaskCancelledError(taskControl.cancelMessage || '任务已取消');
+      }
       const nextStatus = currentTask.status === 'pausing' && partial.status === 'running'
         ? 'pausing'
         : partial.status || currentTask.status;
@@ -527,8 +569,19 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
       : definition.stateKey === 'rejectionCheck'
         ? rejectionCheckStore
         : duplicateCheckStore;
-    const runnerAiService = aiService?.withQueueScope ? aiService.withQueueScope(queueScopeId) : aiService;
+    const runnerAiService = aiService?.withQueueScope ? aiService.withQueueScope(queueScopeId, taskControl.abortController.signal) : aiService;
     runner({ aiService: runnerAiService, agentService, workspaceStore: runnerWorkspaceStore, knowledgeBaseService, updateTask, payload, taskControl, previousState }).catch((error) => {
+      if (isTaskCancelledError(error) || taskControl.cancelRequested) {
+        const message = taskControl.cancelMessage || '任务已取消，可重新开始。';
+        const currentLogs = Array.isArray(currentTask.logs) ? currentTask.logs : [];
+        const nextLogs = currentLogs.includes(message) ? currentLogs : [...currentLogs, message];
+        const canceledTask = currentTask.status === 'error'
+          ? currentTask
+          : updateTask({ status: 'error', error: message, logs: nextLogs, pause_requested: false });
+        const nextState = updateWorkspaceState(definition, { [taskField]: canceledTask });
+        emit(canceledTask, buildSnapshot(definition, nextState, canceledTask));
+        return;
+      }
       const failedTask = updateTask({ status: 'error', error: error.message || '任务执行失败' });
       const nextState = updateWorkspaceState(definition, { [taskField]: failedTask });
       emit(failedTask, buildSnapshot(definition, nextState, failedTask));
@@ -536,8 +589,12 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
       if (aiService?.resumeQueueScope) {
         aiService.resumeQueueScope(queueScopeId);
       }
-      activeTasks.delete(type);
-      activeTaskControls.delete(type);
+      if (activeTasks.get(type)?.task_id === task.task_id) {
+        activeTasks.delete(type);
+      }
+      if (activeTaskControls.get(type) === taskControl) {
+        activeTaskControls.delete(type);
+      }
     });
 
     return currentTask;
@@ -760,6 +817,41 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
     emit(nextState.analysisTask || recoveredTask, { duplicateCheck: nextState });
   }
 
+  function cancelTask(type, message = '任务已取消，可重新开始。') {
+    const definition = getTaskDefinition(type);
+    const taskField = getTaskField(type);
+    const activeTask = activeTasks.get(type);
+    const activeControl = activeTaskControls.get(type);
+
+    if (activeTask && isActiveTaskStatus(activeTask.status) && activeControl?.requestCancel) {
+      if (activeControl.queueScopeId && aiService?.pauseQueueScope) {
+        aiService.pauseQueueScope(activeControl.queueScopeId);
+      }
+      return activeControl.requestCancel(message);
+    }
+
+    const state = loadWorkspaceState(definition) || {};
+    const storedTask = taskField ? state?.[taskField] : null;
+    if (storedTask && isActiveTaskStatus(storedTask.status)) {
+      const nextLogs = Array.isArray(storedTask.logs) && storedTask.logs.includes(message)
+        ? storedTask.logs
+        : [...(Array.isArray(storedTask.logs) ? storedTask.logs : []), message];
+      const canceledTask = {
+        ...storedTask,
+        status: 'error',
+        error: message,
+        logs: nextLogs,
+        pause_requested: false,
+        updated_at: now(),
+      };
+      const nextState = updateWorkspaceState(definition, { [taskField]: canceledTask });
+      emit(canceledTask, buildSnapshot(definition, nextState, canceledTask));
+      return canceledTask;
+    }
+
+    throw new Error(`当前没有正在运行的${definition.label || '任务'}。`);
+  }
+
   return {
     subscribe,
     startBidSectionExtraction(payload) {
@@ -794,6 +886,9 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
         outlineExpansionMode: payload?.outline_expansion_mode === 'original-only' ? 'original-only' : 'ai-complement',
         referenceKnowledgeDocumentIds: Array.isArray(payload?.reference_knowledge_document_ids) ? payload.reference_knowledge_document_ids : [],
       });
+    },
+    cancelOutlineGeneration() {
+      return cancelTask('outline-generation', '目录生成已取消，可重新生成。');
     },
     startGlobalFactsGeneration(payload) {
       return startManagedTask('global-facts-generation', payload, runGlobalFactsTask, {

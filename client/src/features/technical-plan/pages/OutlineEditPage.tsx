@@ -264,6 +264,7 @@ function OutlineEditPage({
   const [draftOutlineExpansionMode, setDraftOutlineExpansionMode] = useState<OutlineExpansionMode>(outlineExpansionMode);
   const [draftCustomOutlineMode, setDraftCustomOutlineMode] = useState<CustomOutlineGenerationMode>('none');
   const [importingCustomOutline, setImportingCustomOutline] = useState(false);
+  const [cancelingOutline, setCancelingOutline] = useState(false);
   const [draftKnowledgeDocumentIds, setDraftKnowledgeDocumentIds] = useState<string[]>(referenceKnowledgeDocumentIds);
   const [knowledgeSearch, setKnowledgeSearch] = useState('');
   const [expandedKnowledgeFolderIds, setExpandedKnowledgeFolderIds] = useState<Set<string>>(new Set());
@@ -338,6 +339,7 @@ function OutlineEditPage({
       setStartingOutline(false);
       if (task.status !== 'running') {
         setLocalStartAt(null);
+        setCancelingOutline(false);
       }
     }
   }, [task?.status]);
@@ -477,6 +479,21 @@ function OutlineEditPage({
       setStartingOutline(false);
       setLocalStartAt(null);
       showToast(error instanceof Error ? error.message : '启动目录生成任务失败', 'error');
+    }
+  };
+
+  const cancelOutlineGeneration = async () => {
+    if (!taskRunning || cancelingOutline) {
+      return;
+    }
+
+    try {
+      setCancelingOutline(true);
+      await window.yibiao?.tasks.cancelOutlineGeneration();
+      showToast('已取消目录生成，可以重新生成', 'success');
+    } catch (error) {
+      setCancelingOutline(false);
+      showToast(error instanceof Error ? error.message : '取消目录生成失败', 'error');
     }
   };
 
@@ -1078,6 +1095,16 @@ function OutlineEditPage({
               <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.05.05a2 2 0 0 1-2.83 2.83l-.05-.05a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.04 1.56V21a2 2 0 0 1-4 0v-.08a1.7 1.7 0 0 0-1.04-1.56 1.7 1.7 0 0 0-1.87.34l-.05.05a2 2 0 0 1-2.83-2.83l.05-.05A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.04H3a2 2 0 0 1 0-4h.08A1.7 1.7 0 0 0 4.6 8.93a1.7 1.7 0 0 0-.34-1.87l-.05-.05a2 2 0 0 1 2.83-2.83l.05.05a1.7 1.7 0 0 0 1.87.34A1.7 1.7 0 0 0 10 3.01V3a2 2 0 0 1 4 0v.08a1.7 1.7 0 0 0 1.04 1.56 1.7 1.7 0 0 0 1.87-.34l.05-.05a2 2 0 0 1 2.83 2.83l-.05.05a1.7 1.7 0 0 0-.34 1.87 1.7 1.7 0 0 0 1.56 1.04H21a2 2 0 0 1 0 4h-.08A1.7 1.7 0 0 0 19.4 15Z" />
             </svg>
           </button>
+          {taskRunning && (
+            <button
+              type="button"
+              className="danger-action"
+              onClick={() => { void cancelOutlineGeneration(); }}
+              disabled={cancelingOutline}
+            >
+              {cancelingOutline ? '正在取消...' : '取消生成'}
+            </button>
+          )}
           <button type="button" className="primary-action" onClick={openGenerationDialog} disabled={generating || sorting || contentMutationLocked || !projectOverview || !techRequirements}>
             {generating ? 'AI 正在生成目录' : outlineData ? '重新生成目录' : '生成目录'}
           </button>
