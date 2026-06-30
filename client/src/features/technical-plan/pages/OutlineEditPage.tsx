@@ -1121,7 +1121,7 @@ function OutlineEditPage({
             title={BID_NUMBERING_PREVIEW_LINES.join(' / ')}
           >
             <span>{savingBidNumbering ? '保存中...' : '编号样式'}</span>
-            <small>1）/①/a)</small>
+            <small>（1）/①/a)</small>
           </button>
           <button
             type="button"
