@@ -15,6 +15,7 @@ import type { OutlineData, OutlineItem, WordExportProgressEvent } from '../../..
 import type { ExportFormatConfig, ExportTemplateRecord } from '../../../shared/types/exportFormat';
 import { DEFAULT_EXPORT_FORMAT } from '../../../shared/types/exportFormat';
 import type { SectionId } from '../../../shared/types/navigation';
+import { isBidNumberingPreset } from '../../../shared/utils/bidNumberingPreset';
 import { buildExportFormatCssVars } from '../../../shared/utils/exportFormatCss';
 
 interface TechnicalPlanHomeProps {
@@ -43,6 +44,7 @@ const steps: TechnicalPlanStep[] = [
   'content-edit',
   'expand',
 ];
+const CURRENT_EXPORT_FORMAT_TEMPLATE_ID = '__current_export_format__';
 
 const stepLabels: Record<TechnicalPlanStep, string> = {
   'document-analysis': '选择标书',
@@ -222,13 +224,22 @@ function TechnicalPlanHome({ workflowKind, registerLeaveGuard, onSectionChange }
   const isContentGenerating = contentTaskStatus === 'running' || contentTaskStatus === 'pausing';
   const isContentPaused = contentTaskStatus === 'paused';
   const isExporting = exportProgress.running;
+  const currentExportTemplate = useMemo<ExportTemplateRecord>(() => ({
+    template_id: CURRENT_EXPORT_FORMAT_TEMPLATE_ID,
+    template_name: isBidNumberingPreset(exportFormat) ? '当前编号样式（投标编号）' : '当前编号样式',
+    config: exportFormat,
+    created_at: '',
+    updated_at: '',
+  }), [exportFormat]);
   const filteredExportTemplates = useMemo(() => {
     const keyword = exportTemplateSearch.trim().toLowerCase();
     if (!keyword) return exportTemplates;
     return exportTemplates.filter((template) => template.template_name.toLowerCase().includes(keyword));
   }, [exportTemplateSearch, exportTemplates]);
-  const selectedExportTemplate = filteredExportTemplates.find((template) => template.template_id === selectedExportTemplateId) || filteredExportTemplates[0] || null;
-  const exportTemplatePreviewStyle = useMemo(() => buildExportFormatCssVars(selectedExportTemplate?.config || exportFormat), [exportFormat, selectedExportTemplate]);
+  const selectedExportTemplate = selectedExportTemplateId === CURRENT_EXPORT_FORMAT_TEMPLATE_ID
+    ? currentExportTemplate
+    : filteredExportTemplates.find((template) => template.template_id === selectedExportTemplateId) || currentExportTemplate;
+  const exportTemplatePreviewStyle = useMemo(() => buildExportFormatCssVars(selectedExportTemplate.config), [selectedExportTemplate]);
   const requiresOriginalPlan = workflowKind === 'existing-plan-expansion';
   const isNextDisabled = activeIndex >= steps.length - 1
     || (state.step === 'document-analysis' && (!state.tenderFile || (requiresOriginalPlan && !state.originalPlanFile)))
@@ -653,10 +664,14 @@ function TechnicalPlanHome({ workflowKind, registerLeaveGuard, onSectionChange }
       const templates = await window.yibiao?.templates.list();
       const nextTemplates = templates || [];
       setExportTemplates(nextTemplates);
-      setSelectedExportTemplateId((prev) => nextTemplates.some((template) => template.template_id === prev) ? prev : nextTemplates[0]?.template_id || '');
+      setSelectedExportTemplateId((prev) => (
+        prev === CURRENT_EXPORT_FORMAT_TEMPLATE_ID || nextTemplates.some((template) => template.template_id === prev)
+          ? prev
+          : CURRENT_EXPORT_FORMAT_TEMPLATE_ID
+      ));
     } catch (error) {
       setExportTemplates([]);
-      setSelectedExportTemplateId('');
+      setSelectedExportTemplateId(CURRENT_EXPORT_FORMAT_TEMPLATE_ID);
       showToast(error instanceof Error ? error.message : '读取导出模板失败', 'error');
     } finally {
       setExportTemplatesLoading(false);
@@ -671,6 +686,15 @@ function TechnicalPlanHome({ workflowKind, registerLeaveGuard, onSectionChange }
 
     setExportTemplateDialogOpen(true);
     setExportTemplateSearch('');
+    setSelectedExportTemplateId((prev) => prev || CURRENT_EXPORT_FORMAT_TEMPLATE_ID);
+    try {
+      const latestConfig = await window.yibiao?.config.load();
+      if (latestConfig?.export_format) {
+        setExportFormat(latestConfig.export_format);
+      }
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '读取当前编号样式失败', 'error');
+    }
     await loadExportTemplates();
   };
 
@@ -1056,8 +1080,8 @@ function TechnicalPlanHome({ workflowKind, registerLeaveGuard, onSectionChange }
             <div className="export-template-select-head">
               <div>
                 <span className="section-kicker">Word 导出</span>
-                <Dialog.Title>选择导出模板</Dialog.Title>
-                <Dialog.Description>选择一个已保存模板后继续导出。模板样式应用范围保持现有导出逻辑。</Dialog.Description>
+                <Dialog.Title>选择导出样式</Dialog.Title>
+                <Dialog.Description>可直接使用当前编号样式，也可以选择已保存模板后继续导出。</Dialog.Description>
               </div>
               <Dialog.Close className="detail-help-close" type="button" aria-label="关闭模板选择" disabled={isExporting}>×</Dialog.Close>
             </div>
@@ -1072,13 +1096,21 @@ function TechnicalPlanHome({ workflowKind, registerLeaveGuard, onSectionChange }
                   placeholder="搜索模板名称"
                 />
                 <div className="export-template-select-list">
+                  <button
+                    type="button"
+                    className={`export-template-select-row${selectedExportTemplate.template_id === CURRENT_EXPORT_FORMAT_TEMPLATE_ID ? ' is-active' : ''}`}
+                    onClick={() => setSelectedExportTemplateId(CURRENT_EXPORT_FORMAT_TEMPLATE_ID)}
+                  >
+                    <strong>{currentExportTemplate.template_name}</strong>
+                    <span>来自目录页的当前配置，可直接导出验证</span>
+                  </button>
                   {exportTemplatesLoading ? (
                     <div className="export-template-select-empty"><strong>正在读取模板</strong><span>请稍候...</span></div>
                   ) : null}
                   {!exportTemplatesLoading && filteredExportTemplates.length === 0 ? (
                     <div className="export-template-select-empty">
                       <strong>{exportTemplates.length ? '没有匹配模板' : '暂无可用模板'}</strong>
-                      <span>{exportTemplates.length ? '请换个关键词搜索。' : '请先在模版设置中保存模板。'}</span>
+                      <span>{exportTemplates.length ? '请换个关键词搜索。' : '需要长期复用时，可到“模版设置 → 新建模板”保存模板。'}</span>
                     </div>
                   ) : null}
                   {!exportTemplatesLoading && filteredExportTemplates.map((template) => {
