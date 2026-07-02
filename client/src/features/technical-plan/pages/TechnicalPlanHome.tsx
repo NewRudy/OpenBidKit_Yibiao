@@ -15,7 +15,6 @@ import type { OutlineData, OutlineItem, WordExportProgressEvent } from '../../..
 import type { ExportFormatConfig, ExportTemplateRecord } from '../../../shared/types/exportFormat';
 import { DEFAULT_EXPORT_FORMAT } from '../../../shared/types/exportFormat';
 import type { SectionId } from '../../../shared/types/navigation';
-import { isBidNumberingPreset } from '../../../shared/utils/bidNumberingPreset';
 import { buildExportFormatCssVars } from '../../../shared/utils/exportFormatCss';
 
 interface TechnicalPlanHomeProps {
@@ -226,7 +225,7 @@ function TechnicalPlanHome({ workflowKind, registerLeaveGuard, onSectionChange }
   const isExporting = exportProgress.running;
   const currentExportTemplate = useMemo<ExportTemplateRecord>(() => ({
     template_id: CURRENT_EXPORT_FORMAT_TEMPLATE_ID,
-    template_name: isBidNumberingPreset(exportFormat) ? '当前编号样式（投标编号）' : '当前编号样式',
+    template_name: '当前编号样式',
     config: exportFormat,
     created_at: '',
     updated_at: '',

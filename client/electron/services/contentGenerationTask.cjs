@@ -744,6 +744,8 @@ function buildTableCleanupMessages({ chapter, tables }) {
 5. replacement_text 严禁包含 Markdown 表格、HTML <table>、代码块、章节标题或伪目录标题。
 6. 如表格本身为空或无法理解，也要用一句普通文字概括其表达意图，不要返回空字符串。
 
+${BODY_NUMBERING_STYLE_INSTRUCTION}
+
 返回格式：
 {
   "replacements": [
@@ -988,6 +990,17 @@ function formatKnowledgeContentsForPrompt(contents) {
     .join('\n\n');
 }
 
+const BODY_NUMBERING_STYLE_INSTRUCTION = `正文内部层级序号规则：
+1. 这是正文段落内的分层表达规则，不是章节标题编号规则；严禁把这些序号用于当前章节标题或伪目录标题。
+2. 当正文需要分层列举措施、流程、职责、要点或步骤时，按层级使用：
+   一级： （1）
+   二级： 1）
+   三级： ①
+   四级： a)
+   五级： •
+3. 不要使用 1.、1.1、（一）、一、 等其他序号样式。
+4. 层级不够时不要强行凑满五级；能用自然段讲清楚时优先用自然段。`;
+
 function buildChapterContentMessages({ chapter, projectOverview, selectedFactsText, regenerateRequirement, contentPlan, knowledgeContents, preSectionInstruction }) {
   const chapterId = chapter.id || 'unknown';
   const chapterTitle = chapter.title || '未命名章节';
@@ -1009,10 +1022,12 @@ function buildChapterContentMessages({ chapter, projectOverview, selectedFactsTe
 8. 严禁输出 Mermaid、PlantUML、Graphviz、flowchart、graph、sequenceDiagram 等图表代码块、mermaid.ink 链接或图片 Markdown；配图由系统另行处理。
 9. ${tableAllowed ? '表格单元格内如有多项内容，优先使用编号、顿号、分号或短句，不要使用 HTML <br> 标签。' : '如需表达多项参数、职责、流程或措施，请改用分段文字或普通列表，不要用表格模拟。'}
 10. 严禁使用 Markdown 标题语法（#、##、###、####、#####、######），也不要生成与当前章节同级或下级的伪目录标题。
-11. 如需在正文中分层表达，只能使用普通段落、列表、表格或加粗引导语，例如 **实施要点：**。
+11. 如需在正文中分层表达，只能使用普通段落、列表、表格或加粗引导语，例如 **实施要点：**，并遵守正文内部层级序号规则。
 12. 直接返回章节内容，不生成标题，不要任何额外说明。
 13. 如果本章节需要使用的全局事实变量中包含相关内容，必须优先使用变量值，不得前后矛盾。
-14. 仅使用本章节提供的全局事实变量；未提供时不要主动编造具体人员、周期、质保、品牌、型号等会影响全文一致性的承诺。`,
+14. 仅使用本章节提供的全局事实变量；未提供时不要主动编造具体人员、周期、质保、品牌、型号等会影响全文一致性的承诺。
+
+${BODY_NUMBERING_STYLE_INSTRUCTION}`,
     },
   ];
 
@@ -1556,6 +1571,8 @@ function buildContentExpansionMessages({ outlineData, context, projectOverview, 
 9. 严禁使用 Markdown 标题语法（#、##、###、####、#####、######），也不要新增伪目录标题；需要分层时使用加粗引导语或列表。
 10. 如果本章节需要使用的全局事实变量中包含相关内容，扩写必须优先使用变量值，不得新增前后不一致的时间、地点、人员、设备、标准或服务承诺。
 
+${BODY_NUMBERING_STYLE_INSTRUCTION}
+
 返回格式：
 {
   "operation": "insert",
@@ -1965,6 +1982,8 @@ function buildConsistencyRepairMessages({ context, conflicts, globalFactsText, b
 9. ${tableAllowed ? '保留 Markdown 表格、列表、代码块、图片和 Mermaid 块结构。' : '保留普通列表、代码块、图片和 Mermaid 块结构；不得新增或保留 Markdown 表格、HTML 表格。'}
 10. start_line/end_line 使用下方带行号正文中的 1-based 行号；如果不确定也必须提供可唯一匹配的 old_text。
 
+${BODY_NUMBERING_STYLE_INSTRUCTION}
+
 返回格式：
 {
   "patches": [
@@ -2239,6 +2258,8 @@ function buildOriginalCoverageRepairMessages({ target, coverageItems, currentCon
 7. 必须补回审计指出的 partial/missing 核心信息，但不要提到“原方案”“来源段”“用户原文”。
 8. 不要新增图片 Markdown、Mermaid、代码块或伪目录标题。
 9. 保持与当前小节职责一致，不要写其他章节内容。
+
+${BODY_NUMBERING_STYLE_INSTRUCTION}
 
 返回格式：
 {

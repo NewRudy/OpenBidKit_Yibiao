@@ -4931,43 +4931,6 @@ button {
   gap: 10px;
 }
 
-.outline-numbering-preset-action {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  min-width: 94px;
-  height: 42px;
-  padding: 0 13px;
-  color: var(--yb-primary);
-  background: rgba(33, 116, 253, 0.08);
-  border: 1px solid rgba(33, 116, 253, 0.18);
-  border-radius: 14px;
-  cursor: pointer;
-}
-
-.outline-numbering-preset-action span {
-  font-size: 13px;
-  font-weight: 800;
-  line-height: 1.2;
-}
-
-.outline-numbering-preset-action small {
-  color: var(--yb-text-soft);
-  font-size: 11px;
-  line-height: 1.2;
-}
-
-.outline-numbering-preset-action:hover:not(:disabled) {
-  background: rgba(33, 116, 253, 0.13);
-  border-color: rgba(33, 116, 253, 0.3);
-}
-
-.outline-numbering-preset-action:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
 .outline-config-action {
   display: grid;
   place-items: center;

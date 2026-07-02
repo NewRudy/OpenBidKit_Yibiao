@@ -8,7 +8,6 @@ import type { KnowledgeBaseIndex, KnowledgeDocument } from '../../knowledge-base
 import type { OutlineData, OutlineExpansionMode, OutlineItem } from '../../../shared/types';
 import type { ExportFormatConfig } from '../../../shared/types/exportFormat';
 import { DEFAULT_EXPORT_FORMAT } from '../../../shared/types/exportFormat';
-import { applyBidNumberingPreset, BID_NUMBERING_PREVIEW_LINES } from '../../../shared/utils/bidNumberingPreset';
 import { formatOutlineTitle } from '../../../shared/utils/outlineNumbering';
 
 interface OutlineEditPageProps {
@@ -266,7 +265,6 @@ function OutlineEditPage({
   const [draftCustomOutlineMode, setDraftCustomOutlineMode] = useState<CustomOutlineGenerationMode>('none');
   const [importingCustomOutline, setImportingCustomOutline] = useState(false);
   const [cancelingOutline, setCancelingOutline] = useState(false);
-  const [savingBidNumbering, setSavingBidNumbering] = useState(false);
   const [draftKnowledgeDocumentIds, setDraftKnowledgeDocumentIds] = useState<string[]>(referenceKnowledgeDocumentIds);
   const [knowledgeSearch, setKnowledgeSearch] = useState('');
   const [expandedKnowledgeFolderIds, setExpandedKnowledgeFolderIds] = useState<Set<string>>(new Set());
@@ -408,34 +406,6 @@ function OutlineEditPage({
     setDraftKnowledgeDocumentIds(referenceKnowledgeDocumentIds);
     setKnowledgeSearch('');
     setGenerationDialogOpen(true);
-  };
-
-  const applyBidNumbering = async () => {
-    if (savingBidNumbering) return;
-
-    try {
-      setSavingBidNumbering(true);
-      const currentConfig = await window.yibiao?.config.load();
-      if (!currentConfig) {
-        throw new Error('读取当前配置失败');
-      }
-
-      const nextExportFormat = applyBidNumberingPreset(currentConfig.export_format || exportFormat);
-      const result = await window.yibiao?.config.save({
-        ...currentConfig,
-        export_format: nextExportFormat,
-      });
-      if (!result?.success) {
-        throw new Error(result?.message || '保存编号样式失败');
-      }
-
-      setExportFormat(nextExportFormat);
-      showToast('已套用投标编号样式，导出时可选择“当前编号样式”验证', 'success');
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : '保存编号样式失败', 'error');
-    } finally {
-      setSavingBidNumbering(false);
-    }
   };
 
   const importCustomOutlineDocument = async () => {
@@ -1112,17 +1082,6 @@ function OutlineEditPage({
           <p>{isExpansionWorkflow ? `当前原方案目录使用方式：${outlineExpansionModeLabels[outlineExpansionMode]}；参考知识库：${referenceKnowledgeDocumentIds.length ? `已选择 ${referenceKnowledgeDocumentIds.length} 个文档` : '未选择'}。` : `可上传自有大纲作为目录骨架；当前自有大纲：${customOutlineFile ? customOutlineFile.fileName : '未上传'}；参考知识库：${referenceKnowledgeDocumentIds.length ? `已选择 ${referenceKnowledgeDocumentIds.length} 个文档` : '未选择'}。`}</p>
         </div>
         <div className="outline-command-actions">
-          <button
-            type="button"
-            className="outline-numbering-preset-action"
-            onClick={() => { void applyBidNumbering(); }}
-            disabled={savingBidNumbering}
-            aria-label="套用投标编号样式"
-            title={BID_NUMBERING_PREVIEW_LINES.join(' / ')}
-          >
-            <span>{savingBidNumbering ? '保存中...' : '编号样式'}</span>
-            <small>（1）/①/a)</small>
-          </button>
           <button
             type="button"
             className="outline-config-action"
