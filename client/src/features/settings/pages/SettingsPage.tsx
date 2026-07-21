@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import { trackConfigUsage } from '../../../shared/analytics/analytics';
-import { FloatingToolbar, InputWithAction, useToast } from '../../../shared/ui';
+import { DetailHelpLink, FloatingToolbar, InputWithAction, OfflineLicenseActivationDialog, useToast } from '../../../shared/ui';
 import { showUpdateReadyToast } from '../../../shared/updateToast';
 import type { FloatingToolbarGroup } from '../../../shared/ui';
-import type { AgentSelfCheckResult, AiRequestMode, ClientConfig, FileParserProvider, ImageModelConfig, ImageModelProfiles, ImageModelProvider, ImageModelSize, ImageModelStatus, TextModelConfig, TextModelProfiles, TextModelProvider, UpdateChannel } from '../../../shared/types';
+import type { AgentModeScenariosConfig, AgentRuntimeDescriptor, AgentSelfCheckResult, AgentSelfCheckStepStatus, AiRequestMode, ClientConfig, ComponentsConfig, ConfiguredTextModelProvider, FileParserProvider, ImageModelConfig, ImageModelProfiles, ImageModelProvider, ImageModelSize, ImageModelStatus, LicenseRuntimeStatus, TextModelConfig, TextModelProfiles, TextModelProvider, UpdateChannel } from '../../../shared/types';
 import type { SettingsPageState } from '../types';
 
-type SettingsTab = 'general' | 'text-model' | 'image-model' | 'file-parser' | 'agent' | 'about';
+type SettingsTab = 'general' | 'text-model' | 'image-model' | 'components' | 'agent' | 'about';
 type UpdateStatus = 'idle' | 'checking' | 'downloading' | 'downloaded' | 'error' | 'disabled';
 type AgentSelfCheckUiStatus = 'untested' | 'checking' | 'normal' | 'busy' | 'error';
 
@@ -14,17 +14,25 @@ const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
   { id: 'general', label: '通用' },
   { id: 'text-model', label: '文本模型' },
   { id: 'image-model', label: '生图模型' },
-  { id: 'file-parser', label: '文件解析' },
+  { id: 'components', label: '组件设置' },
   { id: 'agent', label: '智能体配置' },
   { id: 'about', label: '关于' },
 ];
 
 const agentSelfCheckStatusMeta: Record<AgentSelfCheckUiStatus, { label: string; description: string }> = {
-  untested: { label: '未检测', description: '点击自检后，会验证 OpenCode Server、AI proxy、当前文本模型和智能体输出链路。' },
-  checking: { label: '检测中', description: '正在清理上一轮自检日志，并执行极简智能体任务。' },
-  normal: { label: '正常', description: '智能体链路已通过自检，可以用于目录修复等 Agent 能力。' },
-  busy: { label: '忙碌', description: 'Agent 正在处理其他任务，本次自检已跳过；这不是 OpenCode 故障。' },
+  untested: { label: '未检测', description: '点击自检后，会验证当前已保存运行时的环境、工具、文本模型和输出链路。' },
+  checking: { label: '检测中', description: '正在检查运行环境、工具链与极简智能体任务。' },
+  normal: { label: '正常', description: '当前智能体运行时和关键集成能力已通过自检。' },
+  busy: { label: '忙碌', description: '智能体正在处理其他任务，本次自检已跳过。' },
   error: { label: '异常', description: '智能体链路自检失败，请查看下方错误详情。' },
+};
+
+const agentDiagnosticStatusMeta: Record<AgentSelfCheckStepStatus | 'warning', { label: string; description: string }> = {
+  pending: { label: '待检查', description: '尚未执行检查。' },
+  running: { label: '检查中', description: '正在执行检查。' },
+  success: { label: '正常', description: '检查已通过。' },
+  warning: { label: '警告', description: '检查完成，但存在需要留意的信息。' },
+  error: { label: '异常', description: '检查未通过。' },
 };
 
 const updateChannelOptions: Array<{ value: UpdateChannel; label: string; description: string }> = [
@@ -32,15 +40,31 @@ const updateChannelOptions: Array<{ value: UpdateChannel; label: string; descrip
   { value: 'cloudflare', label: 'Cloudflare', description: '使用 Cloudflare R2 镜像检查和下载更新' },
 ];
 
+const defaultAgentModeScenarios: AgentModeScenariosConfig = {
+  existing_plan_expansion_original_outline_extraction: true,
+};
+
 function normalizeUpdateChannel(value?: string): UpdateChannel {
   return value === 'cloudflare' ? 'cloudflare' : 'github';
+}
+
+function normalizeAgentModeScenarios(value?: Partial<AgentModeScenariosConfig>): AgentModeScenariosConfig {
+  return {
+    existing_plan_expansion_original_outline_extraction: value?.existing_plan_expansion_original_outline_extraction === undefined
+      ? defaultAgentModeScenarios.existing_plan_expansion_original_outline_extraction
+      : Boolean(value.existing_plan_expansion_original_outline_extraction),
+  };
+}
+
+function getLicenseSourceLabel(status: LicenseRuntimeStatus | null) {
+  if (!status) return '读取中';
+  return status.sourceTrusted ? '官方发行版' : '不可信的客户端来源';
 }
 
 const textModelProviders: Array<{ value: TextModelProvider; label: string }> = [
   { value: 'jinlong', label: '金龙中转站【推荐】' },
   { value: 'volcengine', label: '火山方舟' },
   { value: 'deepseek', label: 'DeepSeek' },
-  { value: 'longcat', label: '龙猫' },
   { value: 'agnes', label: 'Agnes AI' },
   { value: 'custom', label: '自定义' },
 ];
@@ -53,7 +77,7 @@ const aiRequestModeOptions: Array<{ value: AiRequestMode; label: string }> = [
 const DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT = 400000;
 const DEFAULT_TEXT_CONCURRENCY_LIMIT = 10;
 
-const textProviderDefaults: TextModelProfiles = {
+const textProviderDefaults: Record<ConfiguredTextModelProvider, TextModelConfig> = {
   jinlong: { api_key: '', base_url: 'https://jlaudeapi.com/v1', model_name: 'gpt-3.5-turbo', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream' },
   volcengine: { api_key: '', base_url: 'https://ark.cn-beijing.volces.com/api/v3', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream' },
   deepseek: { api_key: '', base_url: 'https://api.deepseek.com', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream' },
@@ -62,11 +86,10 @@ const textProviderDefaults: TextModelProfiles = {
   custom: { api_key: '', base_url: '', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream' },
 };
 
-const textProviderApiKeyUrls: Partial<Record<TextModelProvider, string>> = {
+const textProviderApiKeyUrls: Partial<Record<ConfiguredTextModelProvider, string>> = {
   jinlong: 'https://s.markup.com.cn/jl',
   volcengine: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
   deepseek: 'https://platform.deepseek.com/api_keys',
-  longcat: 'https://longcat.chat/platform/api_keys',
   agnes: 'https://platform.agnes-ai.com/settings/apiKeys',
 };
 
@@ -103,7 +126,7 @@ function parseTextConcurrencyLimitInput(value: string): number | '' {
   return Number.isFinite(number) ? Math.max(1, Math.round(number)) : '';
 }
 
-function normalizeTextModelProfile(provider: TextModelProvider, profile?: Partial<TextModelConfig>): TextModelConfig {
+function normalizeTextModelProfile(provider: ConfiguredTextModelProvider, profile?: Partial<TextModelConfig>): TextModelConfig {
   const defaults = textProviderDefaults[provider];
   const baseUrl = provider === 'custom' ? profile?.base_url ?? defaults.base_url : defaults.base_url;
   return {
@@ -116,11 +139,20 @@ function normalizeTextModelProfile(provider: TextModelProvider, profile?: Partia
   };
 }
 
-function normalizeTextModelProfiles(profiles?: Partial<TextModelProfiles>): TextModelProfiles {
-  return textModelProviders.reduce((nextProfiles, provider) => ({
-    ...nextProfiles,
+function normalizeTextModelProfiles(
+  profiles?: Partial<Record<ConfiguredTextModelProvider, TextModelConfig>>,
+  activeProvider?: ConfiguredTextModelProvider,
+): TextModelProfiles {
+  const nextProfiles = textModelProviders.reduce((normalizedProfiles, provider) => ({
+    ...normalizedProfiles,
     [provider.value]: normalizeTextModelProfile(provider.value, profiles?.[provider.value]),
   }), {} as TextModelProfiles);
+
+  if (activeProvider === 'longcat' || profiles?.longcat) {
+    nextProfiles.longcat = normalizeTextModelProfile('longcat', profiles?.longcat);
+  }
+
+  return nextProfiles;
 }
 
 function textProfileFromState(textModel: SettingsPageState['textModel']): TextModelConfig {
@@ -179,9 +211,9 @@ const imageProviderDefaults: ImageModelProfiles = {
     provider: 'jinlong',
     base_url: 'https://img-api.jlaudeapi.com/v1',
     api_key: '',
-    model_name: '',
+    model_name: 'gpt-image-2',
     image_size: '1024x1024',
-    request_mode: 'stream',
+    request_mode: 'normal',
     concurrency_limit: DEFAULT_IMAGE_CONCURRENCY_LIMIT,
     status: 'untested',
     tested_at: '',
@@ -294,17 +326,18 @@ function createDefaultImageModelProfiles(): ImageModelProfiles {
 
 function normalizeImageModelProfile(provider: ImageModelProvider, profile?: Partial<ImageModelConfig>): ImageModelConfig {
   const defaults = imageProviderDefaults[provider];
+  const useProviderDefaultImageModel = provider === 'jinlong' && !String(profile?.model_name ?? '').trim();
   return {
     provider,
     base_url: provider === 'custom' ? profile?.base_url ?? defaults.base_url : defaults.base_url,
     api_key: profile?.api_key ?? defaults.api_key,
-    model_name: profile?.model_name ?? defaults.model_name,
-    image_size: normalizeImageSize(provider, profile?.image_size ?? defaults.image_size),
-    request_mode: normalizeAiRequestMode(profile?.request_mode ?? defaults.request_mode),
+    model_name: useProviderDefaultImageModel ? defaults.model_name : profile?.model_name ?? defaults.model_name,
+    image_size: normalizeImageSize(provider, useProviderDefaultImageModel ? defaults.image_size : profile?.image_size ?? defaults.image_size),
+    request_mode: normalizeAiRequestMode(useProviderDefaultImageModel ? defaults.request_mode : profile?.request_mode ?? defaults.request_mode),
     concurrency_limit: normalizeImageConcurrencyLimit(profile?.concurrency_limit ?? defaults.concurrency_limit),
-    status: profile?.status ?? defaults.status,
-    tested_at: profile?.tested_at ?? defaults.tested_at,
-    last_error: profile?.last_error ?? defaults.last_error,
+    status: useProviderDefaultImageModel ? defaults.status : profile?.status ?? defaults.status,
+    tested_at: useProviderDefaultImageModel ? defaults.tested_at : profile?.tested_at ?? defaults.tested_at,
+    last_error: useProviderDefaultImageModel ? defaults.last_error : profile?.last_error ?? defaults.last_error,
   };
 }
 
@@ -317,6 +350,49 @@ function parseImageConcurrencyLimitInput(value: string): number | '' {
   if (value === '') return '';
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(1, Math.round(number)) : '';
+}
+
+const DEFAULT_COMPONENT_CONCURRENCY_LIMIT = 5;
+const MIN_COMPONENT_CONCURRENCY_LIMIT = 1;
+const MAX_COMPONENT_CONCURRENCY_LIMIT = 20;
+
+// 归一化组件转换并发量。
+function normalizeComponentConcurrencyLimit(value?: number | string): number {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return DEFAULT_COMPONENT_CONCURRENCY_LIMIT;
+  return Math.min(MAX_COMPONENT_CONCURRENCY_LIMIT, Math.max(MIN_COMPONENT_CONCURRENCY_LIMIT, Math.round(number)));
+}
+
+// 解析组件并发输入。
+function parseComponentConcurrencyLimitInput(value: string): number | '' {
+  if (value === '') return '';
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '';
+  return Math.min(MAX_COMPONENT_CONCURRENCY_LIMIT, Math.max(MIN_COMPONENT_CONCURRENCY_LIMIT, Math.round(number)));
+}
+
+// 归一化组件设置状态。
+function normalizeComponentsState(components?: Partial<ComponentsConfig>): SettingsPageState['components'] {
+  return {
+    file_parser: {
+      provider: components?.file_parser?.provider || 'local',
+      mineru_token: components?.file_parser?.mineru_token || '',
+    },
+    mermaid_concurrency_limit: normalizeComponentConcurrencyLimit(components?.mermaid_concurrency_limit),
+    html_concurrency_limit: normalizeComponentConcurrencyLimit(components?.html_concurrency_limit),
+  };
+}
+
+// 从设置状态生成可保存的组件配置。
+function componentsFromState(components: SettingsPageState['components']): ComponentsConfig {
+  return {
+    file_parser: {
+      provider: components.file_parser.provider,
+      mineru_token: components.file_parser.mineru_token || '',
+    },
+    mermaid_concurrency_limit: normalizeComponentConcurrencyLimit(components.mermaid_concurrency_limit),
+    html_concurrency_limit: normalizeComponentConcurrencyLimit(components.html_concurrency_limit),
+  };
 }
 
 function normalizeImageModelProfiles(profiles?: Partial<ImageModelProfiles>): ImageModelProfiles {
@@ -389,11 +465,11 @@ const parserOptions = [
     title: '本地解析',
     badge: '推荐默认',
     tone: 'primary',
-    summary: '覆盖大多数 Word 和带文字层 PDF，速度快、无调用限制。',
+    summary: '覆盖大多数 Word、Excel 和带文字层 PDF，速度快、无调用限制。',
     items: [
       ['Token', '无需'],
       ['解析速度', '快'],
-      ['支持格式', 'pdf、jpeg、png、docx、doc、wps、ofd'],
+      ['支持格式', 'pdf、docx、doc、wps、md、xls、xlsx'],
       ['大小/页数', '无限制'],
       ['解析质量', '高'],
       ['扫描件', '不支持'],
@@ -407,7 +483,7 @@ const parserOptions = [
     items: [
       ['Token', '需要'],
       ['解析速度', '慢'],
-      ['支持格式', 'pdf、jpeg、png、docx'],
+      ['支持格式', 'pdf、doc、docx、ppt、pptx、图片、html；xls/xlsx 自动本地解析'],
       ['大小/页数', '≤ 200MB / ≤ 200 页'],
       ['解析质量', '高'],
       ['扫描件', '支持'],
@@ -421,7 +497,7 @@ const parserOptions = [
     items: [
       ['Token', '无需（IP 限频）'],
       ['解析速度', '中等'],
-      ['支持格式', 'pdf、jpeg、png、docx'],
+      ['支持格式', 'pdf、doc、docx、ppt、pptx、图片；xls/xlsx 自动本地解析'],
       ['大小/页数', '≤ 10MB / ≤ 20 页'],
       ['解析质量', '中'],
       ['扫描件', '质量差'],
@@ -439,10 +515,16 @@ const initialState: SettingsPageState = {
     ...imageProviderDefaults.jinlong,
   },
   imageModelProfiles: createDefaultImageModelProfiles(),
-  fileParser: {
-    provider: 'local',
-    mineru_token: '',
+  components: {
+    file_parser: {
+      provider: 'local',
+      mineru_token: '',
+    },
+    mermaid_concurrency_limit: DEFAULT_COMPONENT_CONCURRENCY_LIMIT,
+    html_concurrency_limit: DEFAULT_COMPONENT_CONCURRENCY_LIMIT,
   },
+  agentRuntime: '',
+  agentModeScenarios: { ...defaultAgentModeScenarios },
   general: {
     developer_mode: false,
     developer_token_stats_auto_open: false,
@@ -471,6 +553,9 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
   const [updatePercent, setUpdatePercent] = useState(0);
   const [updateVersion, setUpdateVersion] = useState('');
   const [updateError, setUpdateError] = useState('');
+  const [licenseStatus, setLicenseStatus] = useState<LicenseRuntimeStatus | null>(null);
+  const [offlineLicenseDialogOpen, setOfflineLicenseDialogOpen] = useState(false);
+  const [agentRuntimes, setAgentRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
   const [agentSelfCheckStatus, setAgentSelfCheckStatus] = useState<AgentSelfCheckUiStatus>('untested');
   const [agentSelfCheckResult, setAgentSelfCheckResult] = useState<AgentSelfCheckResult | null>(null);
   const [exportingAgentSelfCheckReport, setExportingAgentSelfCheckReport] = useState(false);
@@ -478,7 +563,11 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
 
   useEffect(() => {
     void loadTextConfig();
+    void window.yibiao?.agent.listRuntimes()
+      .then((runtimes) => setAgentRuntimes(runtimes || []))
+      .catch(() => setAgentRuntimes([]));
     void window.yibiao?.getVersion().then(setAppVersion);
+    void window.yibiao?.license?.getStatus().then(setLicenseStatus).catch(() => setLicenseStatus(null));
 
     const unsubs: Array<() => void> = [];
     unsubs.push(
@@ -512,7 +601,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
         return;
       }
 
-      const textModelProfiles = normalizeTextModelProfiles(config.text_model_profiles);
+      const textModelProfiles = normalizeTextModelProfiles(config.text_model_profiles, config.text_model_provider);
       const activeTextProfile = normalizeTextModelProfile(config.text_model_provider, textModelProfiles[config.text_model_provider]);
       const imageModelProfiles = normalizeImageModelProfiles(config.image_model_profiles);
       const activeImageProfile = normalizeImageModelProfile(config.image_model.provider, config.image_model);
@@ -527,10 +616,9 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
         textModelProfiles,
         imageModel: activeImageProfile,
         imageModelProfiles,
-        fileParser: {
-          provider: config.file_parser.provider,
-          mineru_token: config.file_parser.mineru_token || '',
-        },
+        components: normalizeComponentsState(config.components),
+        agentRuntime: config.agent_runtime,
+        agentModeScenarios: normalizeAgentModeScenarios(config.agent_mode_scenarios),
         general: {
           developer_mode: Boolean(config.developer_mode),
           developer_token_stats_auto_open: Boolean(config.developer_token_stats_auto_open),
@@ -557,11 +645,19 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
     [state.imageModel.provider]: imageProfileFromState(state.imageModel),
   });
 
-  const createClientConfig = (): ClientConfig => {
+  const createClientConfig = (options: { includeAgentState?: boolean } = {}): ClientConfig => {
     const textModelProfiles = getCurrentTextModelProfiles();
-    const activeTextProfile = textModelProfiles[state.textModel.provider];
+    const activeTextProfile = textModelProfiles[state.textModel.provider]
+      || normalizeTextModelProfile(state.textModel.provider);
     const imageModelProfiles = getCurrentImageModelProfiles();
     const activeImageProfile = imageModelProfiles[state.imageModel.provider];
+    const persistedAgentRuntime = savedConfig?.agent_runtime
+      || state.agentRuntime
+      || agentRuntimes.find((runtime) => runtime.is_default)?.id
+      || '';
+    const persistedAgentModeScenarios = savedConfig
+      ? normalizeAgentModeScenarios(savedConfig.agent_mode_scenarios)
+      : state.agentModeScenarios;
 
     return {
       text_model_provider: state.textModel.provider,
@@ -574,10 +670,9 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       request_mode: activeTextProfile.request_mode,
       image_model: activeImageProfile,
       image_model_profiles: imageModelProfiles,
-      file_parser: {
-        provider: state.fileParser.provider,
-        mineru_token: state.fileParser.mineru_token || '',
-      },
+      components: componentsFromState(state.components),
+      agent_runtime: options.includeAgentState ? state.agentRuntime : persistedAgentRuntime,
+      agent_mode_scenarios: options.includeAgentState ? state.agentModeScenarios : persistedAgentModeScenarios,
       update_channel: state.general.update_channel,
       gpu_hardware_acceleration_enabled: state.general.gpu_hardware_acceleration_enabled,
       gpu_hardware_acceleration_configured: state.general.gpu_hardware_acceleration_configured,
@@ -731,6 +826,22 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
     }));
   };
 
+  const updateAgentModeScenario = (key: keyof AgentModeScenariosConfig, enabled: boolean) => {
+    setState((prev) => ({
+      ...prev,
+      agentModeScenarios: {
+        ...prev.agentModeScenarios,
+        [key]: enabled,
+      },
+    }));
+  };
+
+  const updateAgentRuntime = (runtimeId: string) => {
+    setState((prev) => ({ ...prev, agentRuntime: runtimeId }));
+    setAgentSelfCheckStatus('untested');
+    setAgentSelfCheckResult(null);
+  };
+
   const updateTextModelProvider = (provider: TextModelProvider) => {
     setTextModels([]);
     setState((prev) => ({
@@ -831,15 +942,10 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       setAgentSelfCheckStatus('checking');
       setAgentSelfCheckResult(null);
 
-      const config = createClientConfig();
-      const saveResult = await window.yibiao?.config.save(config);
-      if (!saveResult?.success) {
-        throw new Error(saveResult?.message || '保存当前文本模型配置失败，无法执行智能体自检');
+      if (!savedConfig?.agent_runtime) {
+        throw new Error('尚未读取到已保存的智能体运行时');
       }
-      setSavedConfig(config);
-      onDeveloperModeChange?.(Boolean(config.developer_mode));
-
-      const result = await window.yibiao?.agent.selfCheck();
+      const result = await window.yibiao?.agent.selfCheck(savedConfig.agent_runtime);
       if (!result) {
         throw new Error('智能体自检未返回结果');
       }
@@ -855,6 +961,8 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       const message = error instanceof Error ? error.message : '智能体自检失败';
       const failedResult: AgentSelfCheckResult = {
         success: false,
+        runtime_id: savedConfig?.agent_runtime || state.agentRuntime,
+        runtime_name: agentRuntimes.find((runtime) => runtime.id === (savedConfig?.agent_runtime || state.agentRuntime))?.display_name || '智能体',
         status: 'error',
         message,
         checked_at: new Date().toISOString(),
@@ -865,8 +973,8 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
         workspace_dir: '',
         output_file: '',
         output_path: '',
-        opencode_binary_path: '',
         steps: [],
+        sections: [],
         error: { message },
         diagnostics: { message },
         detail_text: message,
@@ -979,7 +1087,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
     }
   };
 
-  const saveFileParserConfig = async () => {
+  const saveComponentsConfig = async () => {
     await saveClientConfig(createClientConfig());
   };
 
@@ -1026,7 +1134,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
   const fetchImageModels = async () => {
     try {
       setLoadingModels('image');
-      if (state.imageModel.provider === 'jinlong' || state.imageModel.provider === 'agnes' || state.imageModel.provider === 'custom') {
+      if (state.imageModel.provider === 'jinlong' || state.imageModel.provider === 'volcengine' || state.imageModel.provider === 'agnes' || state.imageModel.provider === 'custom') {
         const providerLabel = imageProviderLabels[state.imageModel.provider];
         const baseUrl = state.imageModel.provider === 'custom'
           ? state.imageModel.base_url || ''
@@ -1074,12 +1182,6 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
         return;
       }
 
-      if (state.imageModel.provider === 'volcengine') {
-        setImageModels([]);
-        showToast('火山方舟请填写控制台中已开通的模型或推理接入点 ID。');
-        return;
-      }
-
       if (state.imageModel.provider === 'google-ai-studio') {
         const models = [
           'gemini-3.1-flash-image-preview',
@@ -1124,7 +1226,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
         profiles: getCurrentTextModelProfiles(),
       }) !== JSON.stringify({
         provider: savedConfig.text_model_provider,
-        profiles: normalizeTextModelProfiles(savedConfig.text_model_profiles),
+        profiles: normalizeTextModelProfiles(savedConfig.text_model_profiles, savedConfig.text_model_provider),
       });
     }
 
@@ -1154,8 +1256,15 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       });
     }
 
-    if (activeTab === 'file-parser') {
-      return JSON.stringify(state.fileParser) !== JSON.stringify(savedConfig.file_parser);
+    if (activeTab === 'components') {
+      return JSON.stringify(componentsFromState(state.components)) !== JSON.stringify(normalizeComponentsState(savedConfig.components));
+    }
+
+    if (activeTab === 'agent') {
+      return JSON.stringify({ runtime: state.agentRuntime, scenarios: state.agentModeScenarios }) !== JSON.stringify({
+        runtime: savedConfig.agent_runtime,
+        scenarios: normalizeAgentModeScenarios(savedConfig.agent_mode_scenarios),
+      });
     }
 
     return false;
@@ -1232,17 +1341,22 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       await saveImageConfig();
       return;
     }
-    if (activeTab === 'file-parser') {
-      await saveFileParserConfig();
+    if (activeTab === 'components') {
+      await saveComponentsConfig();
+      return;
+    }
+    if (activeTab === 'agent') {
+      await saveClientConfig(createClientConfig({ includeAgentState: true }));
     }
   };
 
-  const canSaveActiveTab = activeTab === 'general' || activeTab === 'text-model' || activeTab === 'image-model' || activeTab === 'file-parser';
+  const canSaveActiveTab = activeTab === 'general' || activeTab === 'text-model' || activeTab === 'image-model' || activeTab === 'components' || activeTab === 'agent';
   const activeTabDirty = isActiveTabDirty();
   const currentTextProviderDefault = textProviderDefaults[state.textModel.provider];
   const imageModelStatus: ImageModelStatus = state.imageModel.status || 'untested';
   const currentImageStatus = imageStatusMeta[imageModelStatus];
   const currentAgentSelfCheckStatus = agentSelfCheckStatusMeta[agentSelfCheckStatus];
+  const savedAgentRuntime = agentRuntimes.find((runtime) => runtime.id === savedConfig?.agent_runtime);
   const imageTestTime = formatImageTestTime(state.imageModel.tested_at);
   const settingsToolbarGroups: FloatingToolbarGroup[] = canSaveActiveTab
     ? [
@@ -1283,6 +1397,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
     if (updateStatus === 'disabled') return '开发调试模式不执行自动更新';
     return '启动后自动检查，每 30 分钟轮询';
   })();
+  const licenseSourceLabel = getLicenseSourceLabel(licenseStatus);
 
   return (
     <div className="settings-page">
@@ -1355,14 +1470,14 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                 <strong>GPU 硬件加速</strong>
                 <span>启用后界面可能更流畅；极少数电脑启用后会闪退，关闭后兼容性更好。修改后需重启生效。</span>
               </div>
-              <span className="settings-switch-control">
+              <span className="yb-switch-control">
                 <input
                   type="checkbox"
                   checked={state.general.gpu_hardware_acceleration_enabled}
                   onChange={(event) => updateGpuHardwareAcceleration(event.target.checked)}
                 />
-                <span className="settings-switch-track" aria-hidden="true">
-                  <span className="settings-switch-thumb" />
+                <span className="yb-switch-track" aria-hidden="true">
+                  <span className="yb-switch-thumb" />
                 </span>
               </span>
             </label>
@@ -1371,14 +1486,14 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                 <strong>开发者模式</strong>
                 <span>会打乱既有工作流，生成大量日志占用磁盘空间，<strong>非专业人士请勿开启</strong></span>
               </div>
-              <span className="settings-switch-control">
+              <span className="yb-switch-control">
                 <input
                   type="checkbox"
                   checked={state.general.developer_mode}
                   onChange={(event) => updateDeveloperMode(event.target.checked)}
                 />
-                <span className="settings-switch-track" aria-hidden="true">
-                  <span className="settings-switch-thumb" />
+                <span className="yb-switch-track" aria-hidden="true">
+                  <span className="yb-switch-thumb" />
                 </span>
               </span>
             </label>
@@ -1389,14 +1504,14 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                     <strong>默认打开 Token 统计小窗</strong>
                     <span>开启后，应用下次启动时自动打开开发者 Token 统计悬浮窗</span>
                   </div>
-                  <span className="settings-switch-control">
+                  <span className="yb-switch-control">
                     <input
                       type="checkbox"
                       checked={state.general.developer_token_stats_auto_open}
                       onChange={(event) => updateDeveloperTokenStatsAutoOpen(event.target.checked)}
                     />
-                    <span className="settings-switch-track" aria-hidden="true">
-                      <span className="settings-switch-thumb" />
+                    <span className="yb-switch-track" aria-hidden="true">
+                      <span className="yb-switch-thumb" />
                     </span>
                   </span>
                 </label>
@@ -1444,6 +1559,9 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                 value={state.textModel.provider}
                 onChange={(event) => updateTextModelProvider(event.target.value as TextModelProvider)}
               >
+                {state.textModel.provider === 'longcat' && (
+                  <option value="longcat" disabled>龙猫（历史配置）</option>
+                )}
                 {textModelProviders.map((provider) => (
                   <option value={provider.value} key={provider.value}>{provider.label}</option>
                 ))}
@@ -1712,31 +1830,82 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
         </section>
       )}
 
-      {activeTab === 'file-parser' && (
+      {activeTab === 'components' && (
         <section className="settings-page-section">
           <div className="settings-section-title">
             <span />
-            <strong>文件解析配置</strong>
+            <strong>组件设置</strong>
+          </div>
+
+          <div className="settings-section-title">
+            <span />
+            <strong>文件解析</strong>
           </div>
           <div className="settings-list">
             <label className="settings-row">
               <div className="settings-row-copy">
                 <strong>文件解析方式</strong>
-                <span>优先使用本地解析，复杂扫描件可尝试 MinerU 精准解析 API</span>
+                <span>
+                  优先使用本地解析，复杂扫描件可尝试 MinerU 精准解析 API
+                  <DetailHelpLink title="文件解析方式说明" label="查看介绍">
+                    <div className="parser-help-dialog">
+                      <p className="parser-help-note">
+                        招标文件大多数是 Word 或 Word 导出的带文字层 PDF，本地解析可以适应 95% 以上的情况；如果解析失败，再尝试 MinerU 精准解析 API。
+                      </p>
+                      <div className="parser-help-table-wrap">
+                        <table className="parser-help-table">
+                          <thead>
+                            <tr>
+                              <th scope="col">对比项</th>
+                              {parserOptions.map((option) => (
+                                <th scope="col" className={`parser-help-col-${option.tone}`} key={option.title}>
+                                  <strong>{option.title}</strong>
+                                  <span>{option.badge}</span>
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr>
+                              <th scope="row">说明</th>
+                              {parserOptions.map((option) => (
+                                <td key={`${option.title}-summary`}>{option.summary}</td>
+                              ))}
+                            </tr>
+                            {parserOptions[0].items.map(([label], rowIndex) => (
+                              <tr key={label}>
+                                <th scope="row">{label}</th>
+                                {parserOptions.map((option) => (
+                                  <td key={`${option.title}-${label}`}>{option.items[rowIndex][1]}</td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </DetailHelpLink>
+                </span>
               </div>
               <select
-                value={state.fileParser.provider}
+                value={state.components.file_parser.provider}
                 onChange={(event) => setState((prev) => ({
-                ...prev,
-                fileParser: { ...prev.fileParser, provider: event.target.value as FileParserProvider },
-              }))}
-            >
-              {fileParserProviders.map((provider) => (
+                  ...prev,
+                  components: {
+                    ...prev.components,
+                    file_parser: {
+                      ...prev.components.file_parser,
+                      provider: event.target.value as FileParserProvider,
+                    },
+                  },
+                }))}
+              >
+                {fileParserProviders.map((provider) => (
                   <option value={provider.value} key={provider.value}>{provider.label}</option>
                 ))}
               </select>
             </label>
-            {state.fileParser.provider === 'mineru-accurate-api' && (
+            {state.components.file_parser.provider === 'mineru-accurate-api' && (
               <label className="settings-row">
                 <div className="settings-row-copy">
                   <strong>MinerU Token</strong>
@@ -1744,40 +1913,66 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                 </div>
                 <input
                   type="password"
-                  value={state.fileParser.mineru_token || ''}
+                  value={state.components.file_parser.mineru_token || ''}
                   placeholder="请输入 MinerU Token"
                   onChange={(event) => setState((prev) => ({
                     ...prev,
-                    fileParser: { ...prev.fileParser, mineru_token: event.target.value },
+                    components: {
+                      ...prev.components,
+                      file_parser: {
+                        ...prev.components.file_parser,
+                        mineru_token: event.target.value,
+                      },
+                    },
                   }))}
                 />
               </label>
             )}
           </div>
 
-          <div className="parser-compare">
-            {parserOptions.map((option) => (
-              <article className={`parser-card parser-card-${option.tone}`} key={option.title}>
-                <div className="parser-card-head">
-                  <div>
-                    <strong>{option.title}</strong>
-                    <p>{option.summary}</p>
-                  </div>
-                  <span>{option.badge}</span>
-                </div>
-                <dl className="parser-metrics">
-                  {option.items.map(([label, value]) => (
-                    <div key={`${option.title}-${label}`}>
-                      <dt>{label}</dt>
-                      <dd>{value}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </article>
-            ))}
+          <div className="settings-section-title" style={{ marginTop: 28 }}>
+            <span />
+            <strong>本地转图组件</strong>
           </div>
-          <div className="parser-note">
-            招标文件大多数是 Word 或 Word 导出的带文字层 PDF，本地解析可以适应 95% 以上的情况；如果解析失败，再尝试 MinerU 精准解析 API。
+          <div className="settings-list">
+            <label className="settings-row">
+              <div className="settings-row-copy">
+                <strong>Mermaid 转换并发量</strong>
+                <span>同时本地渲染 Mermaid 图的最大任务数，默认 5</span>
+              </div>
+              <input
+                type="number"
+                min={MIN_COMPONENT_CONCURRENCY_LIMIT}
+                max={MAX_COMPONENT_CONCURRENCY_LIMIT}
+                value={state.components.mermaid_concurrency_limit}
+                onChange={(event) => setState((prev) => ({
+                  ...prev,
+                  components: {
+                    ...prev.components,
+                    mermaid_concurrency_limit: parseComponentConcurrencyLimitInput(event.target.value),
+                  },
+                }))}
+              />
+            </label>
+            <label className="settings-row">
+              <div className="settings-row-copy">
+                <strong>HTML 转换并发量</strong>
+                <span>同时本地截取 HTML 配图的最大任务数，默认 5</span>
+              </div>
+              <input
+                type="number"
+                min={MIN_COMPONENT_CONCURRENCY_LIMIT}
+                max={MAX_COMPONENT_CONCURRENCY_LIMIT}
+                value={state.components.html_concurrency_limit}
+                onChange={(event) => setState((prev) => ({
+                  ...prev,
+                  components: {
+                    ...prev.components,
+                    html_concurrency_limit: parseComponentConcurrencyLimitInput(event.target.value),
+                  },
+                }))}
+              />
+            </label>
           </div>
         </section>
       )}
@@ -1787,6 +1982,27 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
           <div className="settings-section-title">
             <span />
             <strong>智能体配置</strong>
+          </div>
+          <div className="settings-list">
+            <label className="settings-row">
+              <div className="settings-row-copy">
+                <strong>智能体运行时</strong>
+                <span>选择后点击保存生效；运行中的任务继续使用启动时绑定的运行时。</span>
+              </div>
+              <select value={state.agentRuntime} onChange={(event) => updateAgentRuntime(event.target.value)}>
+                {agentRuntimes.map((runtime) => (
+                  <option value={runtime.id} key={runtime.id}>{runtime.display_name}</option>
+                ))}
+              </select>
+            </label>
+            {state.agentRuntime && (
+              <div className="settings-row">
+                <div className="settings-row-copy">
+                  <strong>运行时说明</strong>
+                  <span>{agentRuntimes.find((runtime) => runtime.id === state.agentRuntime)?.description || '正在读取运行时信息'}</span>
+                </div>
+              </div>
+            )}
           </div>
           <div className={`agent-self-check-status is-${agentSelfCheckStatus}`}>
             <div>
@@ -1799,7 +2015,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
             <div className="settings-row">
               <div className="settings-row-copy">
                 <strong>自检</strong>
-                <span>执行一个极简智能体任务，检测 OpenCode Server、AI proxy、当前文本模型和输出文件校验链路。每次自检前会清空上一轮自检日志。</span>
+                <span>检查当前已保存的 {savedAgentRuntime?.display_name || '智能体运行时'}，覆盖运行环境、AI Proxy、工具、当前文本模型和输出文件链路。</span>
               </div>
               <div className="settings-action-cell">
                 <button type="button" className="inline-action" onClick={runAgentSelfCheck} disabled={agentSelfCheckStatus === 'checking'}>
@@ -1809,11 +2025,33 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
               </div>
             </div>
           </div>
+          <div className="settings-section-title">
+            <span />
+            <strong>在以下场景启用智能体模式</strong>
+          </div>
+          <div className="settings-list">
+            <label className="settings-row">
+              <div className="settings-row-copy">
+                <strong>已有方案扩写-旧目录提取</strong>
+                <span>开启后，已有方案扩写会把原方案交给智能体完成旧目录提取和补漏；关闭后使用原有分段提取流程。</span>
+              </div>
+              <span className="yb-switch-control">
+                <input
+                  type="checkbox"
+                  checked={state.agentModeScenarios.existing_plan_expansion_original_outline_extraction}
+                  onChange={(event) => updateAgentModeScenario('existing_plan_expansion_original_outline_extraction', event.target.checked)}
+                />
+                <span className="yb-switch-track" aria-hidden="true">
+                  <span className="yb-switch-thumb" />
+                </span>
+              </span>
+            </label>
+          </div>
           {agentSelfCheckResult && (
             <div className={`agent-self-check-result is-${agentSelfCheckResult.success ? 'normal' : agentSelfCheckResult.status === 'busy' ? 'busy' : 'error'}`}>
               <div className="agent-self-check-result-head">
                 <div>
-                  <strong>{agentSelfCheckResult.success ? '自检通过' : agentSelfCheckResult.status === 'busy' ? '自检跳过' : '自检失败'}</strong>
+                  <strong>{agentSelfCheckResult.runtime_name}：{agentSelfCheckResult.success ? '自检通过' : agentSelfCheckResult.status === 'busy' ? '自检跳过' : '自检失败'}</strong>
                   <span>{agentSelfCheckResult.message}</span>
                 </div>
                 <div className="agent-self-check-result-actions">
@@ -1834,6 +2072,47 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                   ))}
                 </div>
               )}
+              {agentSelfCheckResult.sections.map((section) => {
+                const sectionMeta = agentDiagnosticStatusMeta[section.status];
+                return (
+                  <div className={`agent-isolation-check is-${section.status}`} key={section.id}>
+                    <div className="agent-isolation-check-head">
+                      <div>
+                        <strong>{section.title}</strong>
+                        <span>{section.summary || sectionMeta.description}</span>
+                      </div>
+                      <em>{sectionMeta.label}</em>
+                    </div>
+                    {Boolean(section.details?.length) && (
+                      <div className="agent-isolation-check-grid">
+                        {section.details?.map((item) => (
+                          <div key={`${section.id}-${item.label}`}>
+                            <span>{item.label}</span>
+                            <strong title={item.value}>{item.value || '-'}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {Boolean(section.items?.length) && (
+                      <div className="agent-tool-check-grid">
+                        {section.items?.map((item) => {
+                          const itemMeta = agentDiagnosticStatusMeta[item.status];
+                          return (
+                            <div className={`agent-tool-check-item is-${item.status}`} key={item.id} title={item.detail || item.message}>
+                              <div>
+                                <strong>{item.label}</strong>
+                                <em>{itemMeta.label}</em>
+                              </div>
+                              <span>{item.message || itemMeta.description}</span>
+                              {item.detail && <small>{item.detail}</small>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
               <pre>{agentSelfCheckResult.detail_text}</pre>
             </div>
           )}
@@ -1846,12 +2125,13 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
             <span />
             <strong>关于</strong>
           </div>
-          <div className="about-grid">
-            <div><span>当前版本</span><strong>{appVersion || '...'}</strong></div>
-            <div><span>GitHub 仓库</span><a href="https://github.com/FB208/OpenBidKit_Yibiao" target="_blank" rel="noreferrer">FB208/OpenBidKit_Yibiao</a></div>
-            <div>
-              <span>自动更新</span>
-              <strong>{updateStatusText}</strong>
+          <div className="about-overview">
+            <article className="about-update-card">
+              <div className="about-card-head">
+                <span>自动更新</span>
+                <strong>当前版本 {appVersion || '...'}</strong>
+              </div>
+              <p>{updateStatusText}</p>
               <button
                 type="button"
                 className="update-button"
@@ -1866,8 +2146,43 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
               >
                 {updateStatus === 'downloaded' ? '安装并重启' : updateBusy ? '检查中...' : '检查更新'}
               </button>
-            </div>
-            <div><span>运行模式</span><strong>独立 Electron 客户端</strong></div>
+            </article>
+            <article className="about-info-card about-links-card">
+              <span>信息与授权</span>
+              <ul className="about-links-list">
+                <li className="about-links-item">
+                  <span className="about-links-label">GitHub 仓库</span>
+                  <a
+                    className="about-links-value is-link"
+                    href="https://github.com/FB208/OpenBidKit_Yibiao"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    FB208/OpenBidKit_Yibiao
+                  </a>
+                </li>
+                <li className="about-links-item">
+                  <span className="about-links-label">使用文档</span>
+                  <a
+                    className="about-links-value is-link"
+                    href="https://wiki.agnet.top/"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    wiki.agnet.top
+                  </a>
+                </li>
+                <li className="about-links-item">
+                  <span className="about-links-label">客户端授权状态</span>
+                  <span className={`about-links-value ${licenseStatus?.sourceTrusted ? 'is-trusted' : 'is-untrusted'}`}>
+                    {licenseSourceLabel}
+                  </span>
+                </li>
+              </ul>
+              <button type="button" className="about-links-activate" onClick={() => setOfflineLicenseDialogOpen(true)}>
+                离线激活授权
+              </button>
+            </article>
           </div>
           <div className="privacy-statement">
             <div className="privacy-statement-head">
@@ -1896,6 +2211,11 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
         </section>
       )}
       </div>
+      <OfflineLicenseActivationDialog
+        open={offlineLicenseDialogOpen}
+        onOpenChange={setOfflineLicenseDialogOpen}
+        onActivated={setLicenseStatus}
+      />
       <FloatingToolbar groups={settingsToolbarGroups} label="设置保存工具条" />
     </div>
   );

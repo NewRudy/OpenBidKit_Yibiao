@@ -8,6 +8,10 @@ function getConfigFilePath(app) {
   return path.join(getUserDataPath(app), 'user_config.json');
 }
 
+function getLicenseFilePath(app) {
+  return path.join(getUserDataPath(app), 'license.json');
+}
+
 function getGpuStartupProbePath(app) {
   return path.join(getUserDataPath(app), 'gpu_startup_probe.json');
 }
@@ -36,6 +40,14 @@ function getTechnicalPlanCustomOutlineMarkdownPath(app) {
   return path.join(getTechnicalPlanDir(app), 'custom-outline.md');
 }
 
+function getTechnicalPlanIllustrationsDir(app) {
+  return path.join(getTechnicalPlanDir(app), 'illustrations');
+}
+
+function getTechnicalPlanGeneratedIllustrationsDir(app) {
+  return path.join(getGeneratedImagesDir(app), 'technical-plan', 'illustrations');
+}
+
 function getDuplicateCheckDir(app) {
   return path.join(getWorkspaceDir(app), 'duplicate-check');
 }
@@ -52,6 +64,11 @@ function getRejectionCheckDocumentMarkdownPath(app, role, documentId) {
   if (role === 'bid') {
     const safeDocumentId = String(documentId || 'bid').replace(/[^a-zA-Z0-9_-]/g, '_');
     return path.join(getRejectionCheckDir(app), 'bids', `${safeDocumentId}.md`);
+  }
+  const tenderDocumentId = String(documentId || '').trim();
+  if (tenderDocumentId && tenderDocumentId !== 'tender') {
+    const safeDocumentId = tenderDocumentId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    return path.join(getRejectionCheckDir(app), 'tenders', `${safeDocumentId}.md`);
   }
   return path.join(getRejectionCheckDir(app), 'tender.md');
 }
@@ -107,11 +124,25 @@ function getBundledOpencodeBinaryPath(app) {
   return path.join(__dirname, '..', '..', 'vendor', 'opencode', platformArch, binaryName);
 }
 
+function getBundledAgentToolsBinDir(app) {
+  if (process.env.YIBIAO_OPENCODE_TOOLS_BIN_DIR) {
+    return process.env.YIBIAO_OPENCODE_TOOLS_BIN_DIR;
+  }
+
+  const platformArch = getPlatformArchKey();
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'opencode-tools', platformArch, 'bin');
+  }
+
+  return path.join(__dirname, '..', '..', 'vendor', 'opencode-tools', platformArch, 'bin');
+}
+
 module.exports = {
   getAgentCacheDir,
   getAgentRuntimeDir,
   getAiLogsDir,
   getBundledOpencodeBinaryPath,
+  getBundledAgentToolsBinDir,
   getDeveloperLogsDir,
   getDuplicateCheckContentDir,
   getDuplicateCheckDir,
@@ -120,9 +151,12 @@ module.exports = {
   getGeneratedImagesDir,
   getImportedImagesDir,
   getKnowledgeBaseDir,
+  getLicenseFilePath,
   getRejectionCheckDir,
   getRejectionCheckDocumentMarkdownPath,
   getTechnicalPlanDir,
+  getTechnicalPlanGeneratedIllustrationsDir,
+  getTechnicalPlanIllustrationsDir,
   getTechnicalPlanLogsDir,
   getTechnicalPlanCustomOutlineMarkdownPath,
   getTechnicalPlanOriginalPlanMarkdownPath,

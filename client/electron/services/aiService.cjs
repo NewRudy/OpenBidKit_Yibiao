@@ -5,8 +5,12 @@ const { getGeneratedImagesDir } = require('../utils/paths.cjs');
 const { createDeveloperLogger } = require('../utils/developerLog.cjs');
 const { createAiRequestQueue } = require('../utils/aiRequestQueue.cjs');
 const {
+  copyAiHttpError,
+  createAiHttpErrorFromResponse,
+  emitAiHttpErrorToWindows,
+} = require('../utils/aiHttpError.cjs');
+const {
   copyAiRequestErrorMeta,
-  isRetryableHttpStatus,
   markAiRequestError,
   runWithAiRetry,
 } = require('../utils/aiRetry.cjs');
@@ -19,7 +23,7 @@ const {
 } = require('../utils/aiLog.cjs');
 const textTokenStatsStore = require('./textTokenStatsStore.cjs');
 
-const AI_REQUEST_TIMEOUT_MS = 300000;
+const AI_REQUEST_TIMEOUT_MS = 600000;
 const IMAGE_MODEL_TEST_TIMEOUT_MESSAGE = '生图模型测试超时，请检查 Base URL、API Key 或模型名称';
 const ANALYTICS_ENDPOINT = 'https://analytics.agnet.top/track';
 const ANALYTICS_PROJECT_NAME = 'yibiao-client';
@@ -233,9 +237,7 @@ function createOperationTimeout(timeoutMs, externalSignal) {
       onExternalAbort();
     } else {
       externalSignal.addEventListener('abort', onExternalAbort, { once: true });
-      cleanupExternalSignal = () => {
-        try { externalSignal.removeEventListener('abort', onExternalAbort); } catch {}
-      };
+      cleanupExternalSignal = () => externalSignal.removeEventListener('abort', onExternalAbort);
     }
   }
 
@@ -244,9 +246,6 @@ function createOperationTimeout(timeoutMs, externalSignal) {
     run(promise) {
       return Promise.race([promise, timeoutPromise]);
     },
-    abort(reason) {
-      abortWithReason(reason);
-    },
     clear() {
       cleanupExternalSignal();
       controller.abort();
@@ -254,8 +253,8 @@ function createOperationTimeout(timeoutMs, externalSignal) {
   };
 }
 
-async function runWithOperationTimeout(runner, timeoutMs = AI_REQUEST_TIMEOUT_MS) {
-  const timeout = createOperationTimeout(timeoutMs);
+async function runWithOperationTimeout(runner, timeoutMs = AI_REQUEST_TIMEOUT_MS, externalSignal) {
+  const timeout = createOperationTimeout(timeoutMs, externalSignal);
   try {
     return await timeout.run(runner(timeout.signal));
   } finally {
@@ -372,7 +371,7 @@ function copyRawAiErrorResponse(source, target) {
       target[key] = source[key];
     }
   }
-  return target;
+  return copyAiHttpError(source, target);
 }
 
 function createAiResponseDataError(message, responseData) {
@@ -409,27 +408,12 @@ function saveGeneratedImage(app, image) {
   };
 }
 
-async function ensureOk(response, fallbackMessage) {
+async function ensureOk(response, fallbackMessage, options = {}) {
   if (response.ok) {
     return;
   }
 
-  let detail = '';
-  const rawText = await response.text().catch(() => '');
-  try {
-    const body = rawText ? JSON.parse(rawText) : null;
-    detail = body?.error?.message || body?.message || '';
-  } catch {
-    detail = rawText;
-  }
-
-  const error = new Error(detail || fallbackMessage);
-  if (response.status) {
-    error.status = response.status;
-    error.statusCode = response.status;
-  }
-  error.raw_response_body = rawText;
-  throw markAiRequestError(error, { retryable: isRetryableHttpStatus(response.status) });
+  throw await createAiHttpErrorFromResponse(response, fallbackMessage, { source: options.source || 'ai-service' });
 }
 
 async function fetchOpenAICompatibleImageResponse(baseUrl, apiKey, requestBody, fallbackMessage, options = {}) {
@@ -450,30 +434,20 @@ async function fetchOpenAICompatibleImageResponse(baseUrl, apiKey, requestBody, 
     return response;
   }
 
-  let detail = '';
-  const rawText = await response.text().catch(() => '');
-  try {
-    const body = rawText ? JSON.parse(rawText) : null;
-    detail = body?.error?.message || body?.message || '';
-  } catch {
-    detail = rawText;
-  }
+  const error = await createAiHttpErrorFromResponse(response, fallbackMessage, {
+    source: options.source || 'openai-compatible-image-model',
+    responseFormatUnsupportedChecker: isResponseFormatUnsupported,
+  });
 
-  if (requestBody.response_format && isResponseFormatUnsupported(detail)) {
+  if (requestBody.response_format && error.responseFormatUnsupported) {
     const retryBody = { ...requestBody };
     delete retryBody.response_format;
     const retryResponse = await sendRequest(retryBody);
-    await ensureOk(retryResponse, fallbackMessage);
+    await ensureOk(retryResponse, fallbackMessage, { source: options.source || 'openai-compatible-image-model' });
     return retryResponse;
   }
 
-  const error = new Error(detail || fallbackMessage);
-  if (response.status) {
-    error.status = response.status;
-    error.statusCode = response.status;
-  }
-  error.raw_response_body = rawText;
-  throw markAiRequestError(error, { retryable: isRetryableHttpStatus(response.status) });
+  throw error;
 }
 
 function extractJsonContent(content) {
@@ -864,32 +838,15 @@ async function fetchChatCompletion(app, config, body, options = {}) {
   }
 }
 
-function createAiHttpError(detail, fallbackMessage, status, rawResponseBody = '') {
-  const error = new Error(detail || fallbackMessage);
-  if (status) {
-    error.status = status;
-    error.statusCode = status;
-  }
-  error.responseFormatUnsupported = isResponseFormatUnsupported(detail);
-  error.raw_response_body = rawResponseBody;
-  return markAiRequestError(error, { retryable: isRetryableHttpStatus(status) });
-}
-
 async function ensureTextAiResponseOk(response, fallbackMessage) {
   if (response.ok) {
     return;
   }
 
-  let detail = '';
-  const rawText = await response.text().catch(() => '');
-  try {
-    const body = rawText ? JSON.parse(rawText) : null;
-    detail = body?.error?.message || body?.message || '';
-  } catch {
-    detail = rawText;
-  }
-
-  throw createAiHttpError(detail, fallbackMessage, response.status, rawText);
+  throw await createAiHttpErrorFromResponse(response, fallbackMessage, {
+    source: 'text-model',
+    responseFormatUnsupportedChecker: isResponseFormatUnsupported,
+  });
 }
 
 function appendStreamChoiceContent(choice, contentParts) {
@@ -1259,7 +1216,7 @@ async function requestGoogleImageData(baseUrl, imageConfig, requestBody, request
     throw markAiRequestError(error, { retryable: true });
   }
 
-  await ensureOk(response, fallbackMessage);
+  await ensureOk(response, fallbackMessage, { source: 'google-image-model' });
   if (requestMode === 'stream') {
     return readGoogleImageStream(response);
   }
@@ -1302,7 +1259,6 @@ async function chatWithConfig(app, config, request) {
   let errorMessage = '';
   let analyticsTracked = false;
   const timeoutMs = normalizeRequestTimeoutMs(request);
-  const timeout = createOperationTimeout(timeoutMs, request.signal);
 
   try {
     writeAiLog(app, config, {
@@ -1316,16 +1272,18 @@ async function chatWithConfig(app, config, request) {
       created_at: new Date().toISOString(),
     });
     let result = null;
-    try {
-      result = await timeout.run(requestTextAi(app, config, requestBody, { signal: timeout.signal, requestMode }));
-    } catch (error) {
-      if (!request.response_format || !error.responseFormatUnsupported) {
-        throw error;
-      }
+    result = await runWithAiRetry(() => runWithOperationTimeout(async (signal) => {
+      try {
+        return await requestTextAi(app, config, requestBody, { signal, requestMode });
+      } catch (error) {
+        if (!request.response_format || !error.responseFormatUnsupported) {
+          throw error;
+        }
 
-      requestBody = createChatRequestBody(config, request, { omitResponseFormat: true, stream: requestMode === 'stream' });
-      result = await timeout.run(requestTextAi(app, config, requestBody, { signal: timeout.signal, requestMode }));
-    }
+        requestBody = createChatRequestBody(config, request, { omitResponseFormat: true, stream: requestMode === 'stream' });
+        return requestTextAi(app, config, requestBody, { signal, requestMode });
+      }
+    }, timeoutMs, request.signal));
 
     responseData = result.responseData;
     recordTextTokenStats(config, result.usage);
@@ -1371,9 +1329,9 @@ async function chatWithConfig(app, config, request) {
     }
     copyRawAiErrorResponse(error, wrappedError);
     copyAiRequestErrorMeta(error, wrappedError);
+    markAiRequestError(wrappedError, { retryable: false });
+    emitAiHttpErrorToWindows(wrappedError);
     throw wrappedError;
-  } finally {
-    timeout.clear();
   }
 }
 
@@ -1487,7 +1445,9 @@ async function testOpenAICompatibleImageModel(app, config, provider) {
       error: getAiErrorLogError(error, errorMessage),
       created_at: new Date().toISOString(),
     });
-    throw new Error(errorMessage);
+    const wrappedError = copyRawAiErrorResponse(error, new Error(errorMessage));
+    emitAiHttpErrorToWindows(wrappedError);
+    throw wrappedError;
   }
 }
 
@@ -1580,7 +1540,9 @@ async function testGoogleImageModel(app, config) {
       error: getAiErrorLogError(error, errorMessage),
       created_at: new Date().toISOString(),
     });
-    throw new Error(errorMessage);
+    const wrappedError = copyRawAiErrorResponse(error, new Error(errorMessage));
+    emitAiHttpErrorToWindows(wrappedError);
+    throw wrappedError;
   }
 }
 
@@ -1613,7 +1575,16 @@ async function generateOpenAICompatibleImage(app, config, request, provider) {
       status: 'pending',
       created_at: new Date().toISOString(),
     });
-    responseData = await requestOpenAICompatibleImageData(baseUrl, imageConfig.api_key, requestBody, `${meta.label}生图失败`);
+    responseData = await runWithAiRetry(() => runWithOperationTimeout(
+      (signal) => requestOpenAICompatibleImageData(
+        baseUrl,
+        imageConfig.api_key,
+        requestBody,
+        `${meta.label}生图失败`,
+        { signal, source: `${meta.logProvider}-image-model` },
+      ),
+      AI_REQUEST_TIMEOUT_MS,
+    ));
     trackAiRequest(app, config, { ai_request_type: 'image', usage: extractOpenAIUsage(responseData) });
     analyticsTracked = true;
 
@@ -1653,7 +1624,9 @@ async function generateOpenAICompatibleImage(app, config, request, provider) {
       error: getAiErrorLogError(error, error.message),
       created_at: new Date().toISOString(),
     });
-    throw error;
+    const finalError = markAiRequestError(error, { retryable: false });
+    emitAiHttpErrorToWindows(finalError);
+    throw finalError;
   }
 }
 
@@ -1680,7 +1653,17 @@ async function generateGoogleImage(app, config, request) {
       status: 'pending',
       created_at: new Date().toISOString(),
     });
-    responseData = await requestGoogleImageData(baseUrl, imageConfig, requestBody, requestMode, 'Google AI Studio 生图失败');
+    responseData = await runWithAiRetry(() => runWithOperationTimeout(
+      (signal) => requestGoogleImageData(
+        baseUrl,
+        imageConfig,
+        requestBody,
+        requestMode,
+        'Google AI Studio 生图失败',
+        { signal },
+      ),
+      AI_REQUEST_TIMEOUT_MS,
+    ));
     trackAiRequest(app, config, { ai_request_type: 'image', usage: extractGoogleUsage(responseData) });
     analyticsTracked = true;
     const inlineData = getGoogleImageInlineData(responseData);
@@ -1721,7 +1704,9 @@ async function generateGoogleImage(app, config, request) {
       error: getAiErrorLogError(error, error.message),
       created_at: new Date().toISOString(),
     });
-    throw error;
+    const finalError = markAiRequestError(error, { retryable: false });
+    emitAiHttpErrorToWindows(finalError);
+    throw finalError;
   }
 }
 
@@ -1919,24 +1904,30 @@ function createAiService({ app, configStore }) {
         return { success: false, message: '请先填写文本模型 Base URL', models: [] };
       }
 
-      const data = await runWithAiRetry(async () => {
-        let response = null;
-        try {
-          response = await fetch(`${trimBaseUrl(config.base_url)}/models`, {
-            method: 'GET',
-            headers: createHeaders(config.api_key),
-          });
-        } catch (error) {
-          throw markAiRequestError(error, { retryable: true });
-        }
+      let data = null;
+      try {
+        data = await runWithAiRetry(async () => {
+          let response = null;
+          try {
+            response = await fetch(`${trimBaseUrl(config.base_url)}/models`, {
+              method: 'GET',
+              headers: createHeaders(config.api_key),
+            });
+          } catch (error) {
+            throw markAiRequestError(error, { retryable: true });
+          }
 
-        await ensureOk(response, '获取模型列表失败');
-        try {
-          return await response.json();
-        } catch (error) {
-          throw markAiRequestError(error, { retryable: true });
-        }
-      });
+          await ensureOk(response, '获取模型列表失败');
+          try {
+            return await response.json();
+          } catch (error) {
+            throw markAiRequestError(error, { retryable: true });
+          }
+        });
+      } catch (error) {
+        emitAiHttpErrorToWindows(error);
+        throw error;
+      }
 
       return {
         success: true,

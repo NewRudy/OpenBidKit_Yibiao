@@ -8,6 +8,9 @@ const bridge = {
   saveGpuHardwareAccelerationPreference: (enabled) => ipcRenderer.invoke('app:save-gpu-hardware-acceleration-preference', enabled),
   startGpuHardwareAccelerationTrial: () => ipcRenderer.invoke('app:start-gpu-hardware-acceleration-trial'),
   relaunchWithGpuHardwareAccelerationDisabled: () => ipcRenderer.invoke('app:relaunch-with-gpu-hardware-acceleration-disabled'),
+  requiredOnlineServices: {
+    getStatus: () => ipcRenderer.invoke('required-online-services:get-status'),
+  },
   getLatestVersion: () => ipcRenderer.invoke('app:get-latest-version'),
   getUpdateDownloadUrl: () => ipcRenderer.invoke('app:get-update-download-url'),
   openExternal: (url) => ipcRenderer.invoke('app:open-external', url),
@@ -43,17 +46,29 @@ const bridge = {
     listModels: (config) => ipcRenderer.invoke('config:list-models', config),
     openConfigFolder: () => ipcRenderer.invoke('config:open-config-folder'),
   },
+  license: {
+    getStatus: () => ipcRenderer.invoke('license:get-status'),
+    refresh: () => ipcRenderer.invoke('license:refresh'),
+    importOfflineFile: () => ipcRenderer.invoke('license:import-offline-file'),
+    activateOfflineCode: (code) => ipcRenderer.invoke('license:activate-offline-code', code),
+  },
   ai: {
     chat: (request) => ipcRenderer.invoke('ai:chat', request),
     requestJson: (request) => ipcRenderer.invoke('ai:request-json', request),
     testImageModel: (config) => ipcRenderer.invoke('ai:test-image-model', config),
+    onHttpError: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('ai:http-error', listener);
+      return () => ipcRenderer.removeListener('ai:http-error', listener);
+    },
   },
   agent: {
-    run: (payload) => ipcRenderer.invoke('agent:run', payload),
-    selfCheck: () => ipcRenderer.invoke('agent:self-check'),
+    listRuntimes: () => ipcRenderer.invoke('agent:list-runtimes'),
+    run: (payload, runtimeId) => ipcRenderer.invoke('agent:run', payload, runtimeId),
+    selfCheck: (runtimeId) => ipcRenderer.invoke('agent:self-check', runtimeId),
     exportSelfCheckReport: (payload) => ipcRenderer.invoke('agent:export-self-check-report', payload),
-    getStatus: () => ipcRenderer.invoke('agent:get-status'),
-    restart: (reason) => ipcRenderer.invoke('agent:restart', reason),
+    getStatus: (runtimeId) => ipcRenderer.invoke('agent:get-status', runtimeId),
+    restart: (reason, runtimeId) => ipcRenderer.invoke('agent:restart', reason, runtimeId),
     onStatus: (callback) => {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on('agent:status', listener);
@@ -70,6 +85,9 @@ const bridge = {
       return () => ipcRenderer.removeListener('developer-token-stats:changed', listener);
     },
   },
+  developerExpansionReplaceTest: {
+    run: (payload) => ipcRenderer.invoke('developer-expansion-replace-test:run', payload),
+  },
   file: {
     selectDuplicateCheckFiles: (options) => ipcRenderer.invoke('file:select-duplicate-check-files', options),
   },
@@ -85,7 +103,7 @@ const bridge = {
     moveDocument: (documentId, targetFolderId, targetDocumentId, position) => ipcRenderer.invoke('knowledge-base:move-document', documentId, targetFolderId, targetDocumentId, position),
     uploadDocuments: (folderId) => ipcRenderer.invoke('knowledge-base:upload-documents', folderId),
     retryDocument: (documentId) => ipcRenderer.invoke('knowledge-base:retry-document', documentId),
-    startMatching: (documentId, batchSize) => ipcRenderer.invoke('knowledge-base:start-matching', documentId, batchSize),
+    startMatching: (documentId, batchSize) => ipcRenderer.invoke('knowledge-base:start-matching', documentId, batchSize), // batchSize 已忽略
     readMarkdown: (documentId) => ipcRenderer.invoke('knowledge-base:read-markdown', documentId),
     readItems: (documentId) => ipcRenderer.invoke('knowledge-base:read-items', documentId),
     readAnalysis: (documentId) => ipcRenderer.invoke('knowledge-base:read-analysis', documentId),
@@ -103,6 +121,7 @@ const bridge = {
     checkBidSections: () => ipcRenderer.invoke('technical-plan:check-bid-sections'),
     selectBidSection: (selectedSection) => ipcRenderer.invoke('technical-plan:select-bid-section', selectedSection),
     readTenderMarkdown: () => ipcRenderer.invoke('technical-plan:read-tender-markdown'),
+    readTenderSourceMarkdown: (sourceId) => ipcRenderer.invoke('technical-plan:read-tender-source-markdown', sourceId),
     readOriginalPlanMarkdown: () => ipcRenderer.invoke('technical-plan:read-original-plan-markdown'),
     readCustomOutlineMarkdown: () => ipcRenderer.invoke('technical-plan:read-custom-outline-markdown'),
     updateStep: (step) => ipcRenderer.invoke('technical-plan:update-step', step),

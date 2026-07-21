@@ -1,4 +1,9 @@
-import { AGENT_RUNTIME_STATUSES, ALLOWED_EVENTS } from '../constants.js';
+import {
+  AGENT_RUNTIME_KIND_PATTERN,
+  AGENT_RUNTIME_MAX_RETRY_COUNT,
+  AGENT_RUNTIME_STATUSES,
+  ALLOWED_EVENTS,
+} from '../constants.js';
 import { isValidProjectName, normalizeMetricValue, normalizeText } from '../utils.js';
 
 function normalizeTokenNumber(value) {
@@ -6,15 +11,43 @@ function normalizeTokenNumber(value) {
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
 }
 
+function normalizeAgentRetryCount(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) && number > 0
+    ? Math.min(AGENT_RUNTIME_MAX_RETRY_COUNT, Math.floor(number))
+    : 0;
+}
+
+function encodeAgentRuntimeMetricPart(value, maxLength) {
+  return encodeURIComponent(normalizeText(value, maxLength));
+}
+
+function createAgentRuntimeMetricKey(runtime, status, retryCount, provider, endpointHost, model) {
+  if (!AGENT_RUNTIME_KIND_PATTERN.test(runtime) || !AGENT_RUNTIME_STATUSES.has(status)) return '';
+  return [
+    'v3',
+    runtime,
+    status,
+    `r${normalizeAgentRetryCount(retryCount)}`,
+    encodeAgentRuntimeMetricPart(provider, 80),
+    encodeAgentRuntimeMetricPart(endpointHost, 120),
+    encodeAgentRuntimeMetricPart(model, 160),
+  ].join('|');
+}
+
 function normalizeBaseUrlHost(value) {
   const text = normalizeText(value, 200);
   if (!text) return '';
 
-  try {
-    return normalizeText(new URL(text).hostname.toLowerCase(), 120);
-  } catch {
-    return normalizeText(text.replace(/^https?:\/\//i, '').split('/')[0].toLowerCase(), 120);
+  const candidates = text.includes('://') ? [text] : [`https://${text}`];
+  for (const candidate of candidates) {
+    try {
+      return normalizeText(new URL(candidate).hostname.toLowerCase(), 120);
+    } catch {
+      // 尝试下一个候选格式。
+    }
   }
+  return normalizeText(text.replace(/^https?:\/\//i, '').split('/')[0].toLowerCase(), 120);
 }
 
 function isIpv4(value) {
@@ -55,7 +88,7 @@ function createMetricBlobs(event) {
       : event.event === 'config_usage'
         ? event.configKey
         : event.event === 'agent_runtime'
-          ? event.agentRuntimeStatus
+          ? event.agentRuntimeMetricKey
           : '';
   const blob10 = event.event === 'ai_request'
     ? event.aiModelEndpointHost
@@ -79,11 +112,11 @@ function createMetricBlobs(event) {
     blob11,
     blob12,
     event.clientIp,
-    '',
-    '',
-    '',
-    '',
-    '',
+    event.licenseStatus,
+    event.licensePlan,
+    event.licenseExpiresAt,
+    event.sourceTrusted,
+    event.untrustedReason,
     '',
     '',
   ];
@@ -95,6 +128,9 @@ export function normalizeTrackBody(body, request) {
   const totalTokens = normalizeTokenNumber(body.total_tokens ?? body.totalTokens) || promptTokens + completionTokens;
   const aiRequestType = normalizeText(body.ai_request_type || body.aiRequestType, 20);
   const aiModelName = normalizeText(body.ai_model_name || body.aiModelName, 160);
+  const agentRuntimeKind = normalizeText(body.agent_runtime_kind || body.agentRuntimeKind, 40);
+  const agentRuntimeStatus = normalizeText(body.agent_runtime_status || body.agentRuntimeStatus, 20);
+  const agentRuntimeRetryCount = normalizeAgentRetryCount(body.agent_runtime_retry_count ?? body.agentRuntimeRetryCount);
 
   const event = {
     projectName: normalizeText(body.projectName || body.project_name, 80),
@@ -113,7 +149,22 @@ export function normalizeTrackBody(body, request) {
     aiModelEndpointHost: normalizeBaseUrlHost(body.ai_model_base_url || body.aiModelBaseUrl),
     aiModelName,
     resourceKey: normalizeText(body.resource_key || body.resourceKey, 80),
-    agentRuntimeStatus: normalizeText(body.agent_runtime_status || body.agentRuntimeStatus, 20),
+    agentRuntimeKind,
+    agentRuntimeStatus,
+    agentRuntimeRetryCount,
+    agentRuntimeMetricKey: createAgentRuntimeMetricKey(
+      agentRuntimeKind,
+      agentRuntimeStatus,
+      agentRuntimeRetryCount,
+      normalizeText(body.ai_model_provider || body.aiModelProvider, 80),
+      normalizeBaseUrlHost(body.ai_model_base_url || body.aiModelBaseUrl),
+      aiModelName,
+    ),
+    licenseStatus: normalizeText(body.license_status || body.licenseStatus, 30),
+    licensePlan: normalizeText(body.license_plan || body.licensePlan, 40),
+    licenseExpiresAt: normalizeText(body.license_expires_at || body.licenseExpiresAt, 20).slice(0, 10),
+    sourceTrusted: normalizeText(body.source_trusted ?? body.sourceTrusted, 20),
+    untrustedReason: normalizeText(body.untrusted_reason || body.untrustedReason, 80),
     promptTokens,
     completionTokens,
     totalTokens,
@@ -126,6 +177,7 @@ export function normalizeTrackBody(body, request) {
 export function validateTrackEvent(event) {
   if (!isValidProjectName(event.projectName)) return 'invalid projectName';
   if (!ALLOWED_EVENTS.has(event.event)) return 'invalid event';
+  if (event.event === 'agent_runtime' && !AGENT_RUNTIME_KIND_PATTERN.test(event.agentRuntimeKind)) return 'invalid agent_runtime_kind';
   if (event.event === 'agent_runtime' && !AGENT_RUNTIME_STATUSES.has(event.agentRuntimeStatus)) return 'invalid agent_runtime_status';
   if (!event.clientId) return 'missing client_id';
   if (!event.clientCreatedAt) return 'missing client_created_at';

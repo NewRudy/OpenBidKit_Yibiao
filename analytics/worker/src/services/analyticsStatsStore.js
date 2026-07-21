@@ -1,4 +1,12 @@
-import { AGENT_RUNTIME_STATUSES, ALLOWED_EVENTS, CONFIG_USAGE_FIELDS, DATASET, MODEL_USAGE_FIELDS } from '../constants.js';
+import {
+  AGENT_RUNTIME_KIND_PATTERN,
+  AGENT_RUNTIME_MAX_RETRY_COUNT,
+  AGENT_RUNTIME_STATUSES,
+  ALLOWED_EVENTS,
+  CONFIG_USAGE_FIELDS,
+  DATASET,
+  MODEL_USAGE_FIELDS,
+} from '../constants.js';
 import {
   businessDateRangeCondition,
   businessDateSqlExpression,
@@ -18,6 +26,7 @@ const RECENT_CLIENT_CREATED_MAX_AGE_DAYS = 1;
 const MAX_RECENT_CLIENT_WRITE_ATTEMPTS = 10000;
 const DEFAULT_RETENTION_RANGE_DAYS = 30;
 const RETENTION_DAYS = [1, 3, 7];
+const LEGACY_AGENT_RUNTIME = 'opencode';
 const recentClientWriteAttempts = new Set();
 
 function requireStatsDb(env) {
@@ -79,6 +88,29 @@ function clientAttemptKey(projectName, clientId) {
   return `${projectName}\0${clientId}`;
 }
 
+function clientLicenseAttemptKey(event, shouldInsert) {
+  return [
+    event.projectName,
+    event.clientId,
+    shouldInsert ? event.clientCreatedAt : '',
+    event.licenseStatus || '',
+    event.licensePlan || '',
+    event.licenseExpiresAt || '',
+    event.sourceTrusted || '',
+    event.untrustedReason || '',
+  ].join('\0');
+}
+
+function hasClientLicenseSnapshot(event) {
+  return Boolean(
+    event.licenseStatus
+    || event.licensePlan
+    || event.licenseExpiresAt
+    || event.sourceTrusted
+    || event.untrustedReason,
+  );
+}
+
 function rememberClientAttempt(key) {
   if (recentClientWriteAttempts.size >= MAX_RECENT_CLIENT_WRITE_ATTEMPTS) {
     recentClientWriteAttempts.clear();
@@ -94,8 +126,37 @@ function configUsageKeysSql() {
   return `(${CONFIG_USAGE_FIELDS.map((field) => sqlString(field.key)).join(', ')})`;
 }
 
-function agentRuntimeStatusesSql() {
-  return `(${Array.from(AGENT_RUNTIME_STATUSES).map((status) => sqlString(status)).join(', ')})`;
+function decodeAgentRuntimeMetricPart(value, maxLength) {
+  const text = String(value || '');
+  try {
+    return normalizeText(decodeURIComponent(text), maxLength);
+  } catch {
+    return normalizeText(text, maxLength);
+  }
+}
+
+function parseAgentRuntimeMetricKey(value) {
+  const parts = normalizeText(value, 1000).split('|');
+  const version = parts[0];
+  const isV2 = version === 'v2' && parts.length >= 6;
+  const isV3 = version === 'v3' && parts.length >= 7;
+  if (!isV2 && !isV3) return null;
+
+  const offset = isV3 ? 1 : 0;
+  const runtime = isV3 ? decodeAgentRuntimeMetricPart(parts[1], 40) : LEGACY_AGENT_RUNTIME;
+  const status = parts[1 + offset];
+  const retryMatch = /^r(\d+)$/.exec(parts[2 + offset]);
+  if (!AGENT_RUNTIME_KIND_PATTERN.test(runtime) || !retryMatch) return null;
+  const retryCount = Math.min(AGENT_RUNTIME_MAX_RETRY_COUNT, Math.max(0, Math.floor(Number(retryMatch[1]) || 0)));
+  if (!AGENT_RUNTIME_STATUSES.has(status)) return null;
+  return {
+    runtime,
+    status,
+    retryCount,
+    provider: decodeAgentRuntimeMetricPart(parts[3 + offset], 80),
+    endpointHost: decodeAgentRuntimeMetricPart(parts[4 + offset], 120),
+    model: decodeAgentRuntimeMetricPart(parts.slice(5 + offset).join('|'), 160),
+  };
 }
 
 function businessDateCondition(activityDate) {
@@ -165,11 +226,15 @@ async function ensureTotals(db, projectName, updatedAt = nowText()) {
 }
 
 export async function recordTrackClient(env, event) {
-  if (!shouldAttemptRealtimeClientInsert(event)) {
+  const shouldInsert = shouldAttemptRealtimeClientInsert(event);
+  const shouldUpdateLicense = hasClientLicenseSnapshot(event);
+  if (!shouldInsert && !shouldUpdateLicense) {
     return;
   }
 
-  const cacheKey = clientAttemptKey(event.projectName, event.clientId);
+  const cacheKey = shouldUpdateLicense
+    ? clientLicenseAttemptKey(event, shouldInsert)
+    : clientAttemptKey(event.projectName, event.clientId);
   if (recentClientWriteAttempts.has(cacheKey)) {
     return;
   }
@@ -177,33 +242,72 @@ export async function recordTrackClient(env, event) {
 
   const db = requireStatsDb(env);
   const updatedAt = nowText();
-  const result = await run(db, `
-    INSERT INTO stats_clients (
-      project_name, client_id, first_seen_at, first_seen_date, active_days,
-      last_active_date, last_active_version, last_access_ip, platform, arch, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, 0, '', '', ?, ?, ?, ?, ?)
-    ON CONFLICT(project_name, client_id) DO NOTHING
-  `, [
-    event.projectName,
-    event.clientId,
-    updatedAt,
-    event.clientCreatedAt,
-    event.clientIp || '',
-    event.platform || '',
-    event.arch || '',
-    updatedAt,
-    updatedAt,
-  ]);
-  if (!result?.meta?.changes) {
+
+  if (shouldInsert) {
+    const result = await run(db, `
+      INSERT INTO stats_clients (
+        project_name, client_id, first_seen_at, first_seen_date, active_days,
+        last_active_date, last_active_version, last_access_ip, platform, arch,
+        license_status, license_plan, license_expires_at, source_trusted, untrusted_reason,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 0, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(project_name, client_id) DO NOTHING
+    `, [
+      event.projectName,
+      event.clientId,
+      updatedAt,
+      event.clientCreatedAt,
+      event.clientIp || '',
+      event.platform || '',
+      event.arch || '',
+      event.licenseStatus || '',
+      event.licensePlan || '',
+      event.licenseExpiresAt || '',
+      event.sourceTrusted || '',
+      event.untrustedReason || '',
+      updatedAt,
+      updatedAt,
+    ]);
+    if (result?.meta?.changes) {
+      await ensureTotals(db, event.projectName, updatedAt);
+      await run(db, `
+        UPDATE stats_totals
+        SET total_clients = total_clients + 1, updated_at = ?
+        WHERE project_name = ?
+      `, [updatedAt, event.projectName]);
+      return;
+    }
+  }
+
+  if (!shouldUpdateLicense) {
     return;
   }
 
-  await ensureTotals(db, event.projectName, updatedAt);
   await run(db, `
-    UPDATE stats_totals
-    SET total_clients = total_clients + 1, updated_at = ?
-    WHERE project_name = ?
-  `, [updatedAt, event.projectName]);
+    UPDATE stats_clients
+    SET
+      license_status = CASE WHEN ? != '' THEN ? ELSE license_status END,
+      license_plan = CASE WHEN ? != '' THEN ? ELSE license_plan END,
+      license_expires_at = CASE WHEN ? != '' THEN ? ELSE license_expires_at END,
+      source_trusted = CASE WHEN ? != '' THEN ? ELSE source_trusted END,
+      untrusted_reason = CASE WHEN ? != '' THEN ? ELSE untrusted_reason END,
+      updated_at = ?
+    WHERE project_name = ? AND client_id = ?
+  `, [
+    event.licenseStatus || '',
+    event.licenseStatus || '',
+    event.licensePlan || '',
+    event.licensePlan || '',
+    event.licenseExpiresAt || '',
+    event.licenseExpiresAt || '',
+    event.sourceTrusted || '',
+    event.sourceTrusted || '',
+    event.untrustedReason || '',
+    event.untrustedReason || '',
+    updatedAt,
+    event.projectName,
+    event.clientId,
+  ]);
 }
 
 async function queryTodayActiveClients(env, projectName) {
@@ -253,7 +357,15 @@ export async function queryStatsOverview(env, projectName) {
 
   const [totals, todayNew, last7New, dailyRows, todayActiveClients, todayDaily] = await Promise.all([
     first(db, `
-      SELECT total_clients, total_open, total_page_views, total_events, total_ai_requests, last_rollup_date
+      SELECT
+        total_clients,
+        total_open,
+        total_page_views,
+        total_events,
+        total_ai_requests,
+        total_text_tokens,
+        total_generated_images,
+        last_rollup_date
       FROM stats_totals
       WHERE project_name = ?
     `, [projectName]),
@@ -295,6 +407,8 @@ export async function queryStatsOverview(env, projectName) {
     totalView: number(totals?.total_page_views),
     totalEvents: number(totals?.total_events),
     totalAiRequests: number(totals?.total_ai_requests),
+    totalTextTokens: number(totals?.total_text_tokens),
+    totalGeneratedImages: number(totals?.total_generated_images),
     todayNewClients: number(todayNew?.count),
     last7NewClients: number(last7New?.count),
     todayActiveClients,
@@ -312,7 +426,12 @@ export async function queryStatsClients(env, projectName) {
       active_days AS activeDays,
       last_active_date AS lastActiveDate,
       last_active_version AS lastActiveVersion,
-      last_access_ip AS lastAccessIp
+      last_access_ip AS lastAccessIp,
+      license_status AS licenseStatus,
+      license_plan AS licensePlan,
+      license_expires_at AS licenseExpiresAt,
+      source_trusted AS sourceTrusted,
+      untrusted_reason AS untrustedReason
     FROM stats_clients
     WHERE project_name = ?
     ORDER BY last_active_date DESC, first_seen_at DESC, client_id ASC
@@ -325,6 +444,11 @@ export async function queryStatsClients(env, projectName) {
     lastActiveDate: row.lastActiveDate || '',
     lastActiveVersion: row.lastActiveVersion || '',
     lastAccessIp: row.lastAccessIp || '',
+    licenseStatus: row.licenseStatus || '',
+    licensePlan: row.licensePlan || '',
+    licenseExpiresAt: row.licenseExpiresAt || '',
+    sourceTrusted: row.sourceTrusted || '',
+    untrustedReason: row.untrustedReason || '',
   }));
 }
 
@@ -587,47 +711,213 @@ export async function queryStatsModelUsage(env, projectName, range, filters) {
   return usage;
 }
 
-function createAgentRuntimeSummary(rows = []) {
-  const counts = { success: 0, failed: 0 };
-  for (const row of rows || []) {
-    const status = normalizeText(row.status, 20);
-    if (!AGENT_RUNTIME_STATUSES.has(status)) continue;
-    counts[status] += number(row.count ?? row.runCount ?? row.run_count);
-  }
-  const totalCount = counts.success + counts.failed;
+function createAgentRuntimeSummary(source = {}) {
+  const successCount = number(source.successCount ?? source.success_count);
+  const failedCount = number(source.failedCount ?? source.failed_count);
+  const totalCount = number(source.totalCount ?? source.total_count) || successCount + failedCount;
+  const retryCount = number(source.retryCount ?? source.retry_count);
+  const retriedRunCount = number(source.retriedRunCount ?? source.retried_run_count);
+  const retrySuccessCount = number(source.retrySuccessCount ?? source.retry_success_count);
   return {
-    successCount: counts.success,
-    failedCount: counts.failed,
+    successCount,
+    failedCount,
     totalCount,
-    successRate: totalCount > 0 ? counts.success / totalCount : 0,
+    retryCount,
+    retriedRunCount,
+    retrySuccessCount,
+    successRate: totalCount > 0 ? successCount / totalCount : 0,
+    failureRate: totalCount > 0 ? failedCount / totalCount : 0,
+    retryRate: totalCount > 0 ? retriedRunCount / totalCount : 0,
+    retrySuccessRate: retriedRunCount > 0 ? retrySuccessCount / retriedRunCount : 0,
   };
+}
+
+function createEmptyAgentRuntimeCounters() {
+  return {
+    successCount: 0,
+    failedCount: 0,
+    totalCount: 0,
+    retryCount: 0,
+    retriedRunCount: 0,
+    retrySuccessCount: 0,
+  };
+}
+
+function addAgentRuntimeMetric(counters, parsed, count) {
+  if (parsed.status === 'success') counters.successCount += count;
+  if (parsed.status === 'failed') counters.failedCount += count;
+  counters.totalCount += count;
+  counters.retryCount += count * parsed.retryCount;
+  if (parsed.retryCount > 0) {
+    counters.retriedRunCount += count;
+    if (parsed.status === 'success') counters.retrySuccessCount += count;
+  }
+}
+
+function sortAgentRuntimeModelRows(rows) {
+  return [...rows].sort((left, right) => {
+    const totalDiff = number(right.totalCount) - number(left.totalCount);
+    if (totalDiff) return totalDiff;
+    const runtimeDiff = String(left.runtime || '').localeCompare(String(right.runtime || ''), 'zh-CN', { numeric: true });
+    if (runtimeDiff) return runtimeDiff;
+    const providerDiff = String(left.provider || '').localeCompare(String(right.provider || ''), 'zh-CN', { numeric: true });
+    if (providerDiff) return providerDiff;
+    const hostDiff = String(left.endpointHost || '').localeCompare(String(right.endpointHost || ''), 'zh-CN', { numeric: true });
+    if (hostDiff) return hostDiff;
+    return String(left.model || '').localeCompare(String(right.model || ''), 'zh-CN', { numeric: true });
+  });
+}
+
+function createAgentRuntimeRowsFromMetricRows(rows = []) {
+  const grouped = new Map();
+  for (const row of rows || []) {
+    const parsed = parseAgentRuntimeMetricKey(row.metricKey ?? row.metric_key ?? row.status ?? row.blob9);
+    if (!parsed) continue;
+    const count = number(row.count ?? row.runCount ?? row.run_count);
+    if (count <= 0) continue;
+    const key = [parsed.runtime, parsed.provider, parsed.endpointHost, parsed.model].join('\0');
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        runtime: parsed.runtime,
+        provider: parsed.provider,
+        endpointHost: parsed.endpointHost,
+        model: parsed.model,
+        ...createEmptyAgentRuntimeCounters(),
+      });
+    }
+    addAgentRuntimeMetric(grouped.get(key), parsed, count);
+  }
+
+  return sortAgentRuntimeModelRows(Array.from(grouped.values()).map((row) => ({
+    runtime: row.runtime,
+    provider: row.provider,
+    endpointHost: row.endpointHost,
+    model: row.model,
+    ...createAgentRuntimeSummary(row),
+  })));
+}
+
+function createAgentRuntimeSummaryFromRows(rows = []) {
+  const summary = {
+    successCount: 0,
+    failedCount: 0,
+    totalCount: 0,
+    retryCount: 0,
+    retriedRunCount: 0,
+    retrySuccessCount: 0,
+  };
+  for (const row of rows || []) {
+    summary.successCount += number(row.successCount ?? row.success_count);
+    summary.failedCount += number(row.failedCount ?? row.failed_count);
+    summary.totalCount += number(row.totalCount ?? row.total_count);
+    summary.retryCount += number(row.retryCount ?? row.retry_count);
+    summary.retriedRunCount += number(row.retriedRunCount ?? row.retried_run_count);
+    summary.retrySuccessCount += number(row.retrySuccessCount ?? row.retry_success_count);
+  }
+  return createAgentRuntimeSummary(summary);
+}
+
+function normalizeAgentRuntimeModelRow(row = {}) {
+  return {
+    runtime: normalizeText(row.runtime, 40),
+    provider: normalizeText(row.provider, 80),
+    endpointHost: normalizeText(row.endpointHost ?? row.endpoint_host, 120),
+    model: normalizeText(row.model, 160),
+    ...createAgentRuntimeSummary(row),
+  };
+}
+
+function createAgentRuntimeRowsByRuntime(models = []) {
+  const grouped = new Map();
+  for (const model of models) {
+    const runtime = model.runtime;
+    if (!grouped.has(runtime)) {
+      grouped.set(runtime, { runtime, ...createEmptyAgentRuntimeCounters() });
+    }
+    const counters = grouped.get(runtime);
+    counters.successCount += model.successCount;
+    counters.failedCount += model.failedCount;
+    counters.totalCount += model.totalCount;
+    counters.retryCount += model.retryCount;
+    counters.retriedRunCount += model.retriedRunCount;
+    counters.retrySuccessCount += model.retrySuccessCount;
+  }
+  return Array.from(grouped.values())
+    .map((row) => ({ runtime: row.runtime, ...createAgentRuntimeSummary(row) }))
+    .sort((left, right) => number(right.totalCount) - number(left.totalCount) || left.runtime.localeCompare(right.runtime));
+}
+
+function createAgentRuntimeResponse(rows = []) {
+  const models = sortAgentRuntimeModelRows(rows.map(normalizeAgentRuntimeModelRow));
+  return {
+    ...createAgentRuntimeSummaryFromRows(models),
+    runtimes: createAgentRuntimeRowsByRuntime(models),
+    models,
+  };
+}
+
+async function ensureAgentRuntimeStatsTable(db) {
+  await run(db, `
+    CREATE TABLE IF NOT EXISTS stats_agent_runtime (
+      project_name TEXT NOT NULL,
+      runtime TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      endpoint_host TEXT NOT NULL,
+      model TEXT NOT NULL,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      failed_count INTEGER NOT NULL DEFAULT 0,
+      total_count INTEGER NOT NULL DEFAULT 0,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      retried_run_count INTEGER NOT NULL DEFAULT 0,
+      retry_success_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (project_name, runtime, provider, endpoint_host, model)
+    )
+  `);
+  await run(db, `
+    CREATE INDEX IF NOT EXISTS idx_stats_agent_runtime_project_total
+    ON stats_agent_runtime (project_name, total_count DESC)
+  `);
 }
 
 export async function queryStatsAgentRuntime(env, projectName, range) {
   if (range === 'history') {
-    const rows = await all(requireStatsDb(env), `
-      SELECT status, run_count AS count
+    const db = requireStatsDb(env);
+    await ensureAgentRuntimeStatsTable(db);
+    const rows = await all(db, `
+      SELECT
+        runtime,
+        provider,
+        endpoint_host AS endpointHost,
+        model,
+        success_count AS successCount,
+        failed_count AS failedCount,
+        total_count AS totalCount,
+        retry_count AS retryCount,
+        retried_run_count AS retriedRunCount,
+        retry_success_count AS retrySuccessCount
       FROM stats_agent_runtime
-      WHERE project_name = ? AND status IN ('success', 'failed')
+      WHERE project_name = ?
+      ORDER BY total_count DESC, runtime ASC, provider ASC, endpoint_host ASC, model ASC
     `, [projectName]);
-    return createAgentRuntimeSummary(rows);
+    return createAgentRuntimeResponse(rows);
   }
 
   const project = sqlString(projectName);
   const result = await queryAnalytics(env, `
     SELECT
-      blob9 AS status,
+      blob9 AS metricKey,
       SUM(_sample_interval) AS count
     FROM ${DATASET}
     WHERE blob1 = ${project}
       AND blob2 = 'agent_runtime'
-      AND blob9 IN ${agentRuntimeStatusesSql()}
+      AND blob9 != ''
       AND ${aeRangeCondition(range)}
-    GROUP BY status
-    ORDER BY status ASC
-    LIMIT 10
+    GROUP BY metricKey
+    ORDER BY count DESC, metricKey ASC
+    LIMIT ${MAX_ANALYTICS_ROWS}
   `);
-  return createAgentRuntimeSummary(result.data || []);
+  return createAgentRuntimeResponse(createAgentRuntimeRowsFromMetricRows(result.data || []));
 }
 
 export async function queryStatsProjects(env) {
@@ -701,6 +991,8 @@ export const ROLLUP_CRON_STAGES = [
   { cron: '30 18 * * *', stages: ['configs', 'models', 'agents'], beijingTime: '02:30', description: '写入配置使用、模型请求、Agent 执行和 Total Tokens 累计值' },
   { cron: '0 19 * * *', stages: ['retention', 'resources'], beijingTime: '03:00', description: '写入留存快照，重算资源历史点击量并完成整日汇总' },
 ];
+
+export const OVERVIEW_AI_TOTALS_CRON = '30 18 * * *';
 
 const ROLLUP_STAGE_ORDER = ['discover', 'daily', 'clients', 'pages', 'versions', 'configs', 'models', 'agents', 'retention', 'resources'];
 const ROLLUP_STAGES_BY_CRON = new Map(ROLLUP_CRON_STAGES.map((item) => [item.cron, item.stages]));
@@ -1133,7 +1425,12 @@ async function queryRollupClientRows(env, activityDate, projectNames) {
       argMax(${versionExpr}, timestamp) AS lastVersion,
       argMax(blob13, timestamp) AS lastAccessIp,
       argMax(blob5, timestamp) AS platform,
-      argMax(blob6, timestamp) AS arch
+      argMax(blob6, timestamp) AS arch,
+      argMax(blob14, timestamp) AS licenseStatus,
+      argMax(blob15, timestamp) AS licensePlan,
+      argMax(blob16, timestamp) AS licenseExpiresAt,
+      argMax(blob17, timestamp) AS sourceTrusted,
+      argMax(blob18, timestamp) AS untrustedReason
     FROM ${DATASET}
     WHERE blob1 IN ${projectsSql(projectNames)}
       AND blob2 IN ${allowedEventsSql()}
@@ -1153,6 +1450,11 @@ async function queryRollupClientRows(env, activityDate, projectNames) {
     lastAccessIp: normalizeText(row.lastAccessIp, 80),
     platform: normalizeText(row.platform, 50),
     arch: normalizeText(row.arch, 50),
+    licenseStatus: normalizeText(row.licenseStatus, 30),
+    licensePlan: normalizeText(row.licensePlan, 40),
+    licenseExpiresAt: normalizeText(row.licenseExpiresAt, 20).slice(0, 10),
+    sourceTrusted: normalizeText(row.sourceTrusted, 20),
+    untrustedReason: normalizeText(row.untrustedReason, 80),
   })).filter((row) => row.projectName && row.clientId);
 }
 
@@ -1197,14 +1499,22 @@ function prepareClientStatements(db, rows, updatedAt) {
         json_extract(item.value, '$.lastVersion') AS last_active_version,
         json_extract(item.value, '$.lastAccessIp') AS last_access_ip,
         json_extract(item.value, '$.platform') AS platform,
-        json_extract(item.value, '$.arch') AS arch
+        json_extract(item.value, '$.arch') AS arch,
+        json_extract(item.value, '$.licenseStatus') AS license_status,
+        json_extract(item.value, '$.licensePlan') AS license_plan,
+        json_extract(item.value, '$.licenseExpiresAt') AS license_expires_at,
+        json_extract(item.value, '$.sourceTrusted') AS source_trusted,
+        json_extract(item.value, '$.untrustedReason') AS untrusted_reason
       FROM json_each(?) AS item
     )
     INSERT INTO stats_clients (
       project_name, client_id, first_seen_at, first_seen_date, active_days,
-      last_active_date, last_active_version, last_access_ip, platform, arch, created_at, updated_at
+      last_active_date, last_active_version, last_access_ip, platform, arch,
+      license_status, license_plan, license_expires_at, source_trusted, untrusted_reason,
+      created_at, updated_at
     )
-    SELECT project_name, client_id, first_seen_at, first_seen_date, 1, last_active_date, last_active_version, last_access_ip, platform, arch, ?, ?
+    SELECT project_name, client_id, first_seen_at, first_seen_date, 1, last_active_date, last_active_version, last_access_ip, platform, arch,
+      license_status, license_plan, license_expires_at, source_trusted, untrusted_reason, ?, ?
     FROM rows
     WHERE project_name != '' AND client_id != ''
     ON CONFLICT(project_name, client_id) DO UPDATE SET
@@ -1214,6 +1524,11 @@ function prepareClientStatements(db, rows, updatedAt) {
       last_access_ip = CASE WHEN excluded.last_access_ip != '' AND excluded.last_active_date >= stats_clients.last_active_date THEN excluded.last_access_ip ELSE stats_clients.last_access_ip END,
       platform = CASE WHEN excluded.platform != '' THEN excluded.platform ELSE stats_clients.platform END,
       arch = CASE WHEN excluded.arch != '' THEN excluded.arch ELSE stats_clients.arch END,
+      license_status = CASE WHEN excluded.license_status != '' THEN excluded.license_status ELSE stats_clients.license_status END,
+      license_plan = CASE WHEN excluded.license_plan != '' THEN excluded.license_plan ELSE stats_clients.license_plan END,
+      license_expires_at = CASE WHEN excluded.license_expires_at != '' THEN excluded.license_expires_at ELSE stats_clients.license_expires_at END,
+      source_trusted = CASE WHEN excluded.source_trusted != '' THEN excluded.source_trusted ELSE stats_clients.source_trusted END,
+      untrusted_reason = CASE WHEN excluded.untrusted_reason != '' THEN excluded.untrusted_reason ELSE stats_clients.untrusted_reason END,
       updated_at = excluded.updated_at
   `).bind(json, updatedAt, updatedAt)];
 }
@@ -1578,22 +1893,27 @@ async function queryRollupAgentRuntimeRows(env, activityDate, projectNames) {
   const result = await queryAnalytics(env, `
     SELECT
       blob1 AS projectName,
-      blob9 AS status,
+      blob9 AS metricKey,
       SUM(_sample_interval) AS runCount
     FROM ${DATASET}
     WHERE blob1 IN ${projectsSql(projectNames)}
       AND blob2 = 'agent_runtime'
-      AND blob9 IN ${agentRuntimeStatusesSql()}
+      AND blob9 != ''
       AND ${businessDateCondition(activityDate)}
-    GROUP BY projectName, status
-    ORDER BY projectName ASC, status ASC
+    GROUP BY projectName, metricKey
+    ORDER BY projectName ASC, metricKey ASC
     LIMIT ${MAX_ANALYTICS_ROWS}
   `);
-  return (result.data || []).map((row) => ({
-    projectName: normalizeProjectName(row.projectName),
-    status: normalizeText(row.status, 20),
-    runCount: number(row.runCount),
-  })).filter((row) => row.projectName && AGENT_RUNTIME_STATUSES.has(row.status) && row.runCount > 0);
+  const grouped = new Map();
+  for (const row of result.data || []) {
+    const projectName = normalizeProjectName(row.projectName);
+    if (!projectName) continue;
+    if (!grouped.has(projectName)) grouped.set(projectName, []);
+    grouped.get(projectName).push({ metricKey: row.metricKey, count: row.runCount });
+  }
+  return Array.from(grouped.entries()).flatMap(([projectName, rows]) => (
+    createAgentRuntimeRowsFromMetricRows(rows).map((summary) => ({ projectName, ...summary }))
+  )).filter((row) => row.projectName && row.totalCount > 0);
 }
 
 function prepareAgentRuntimeStatements(db, rows, updatedAt) {
@@ -1602,22 +1922,43 @@ function prepareAgentRuntimeStatements(db, rows, updatedAt) {
     WITH rows AS (
       SELECT
         json_extract(item.value, '$.projectName') AS project_name,
-        json_extract(item.value, '$.status') AS status,
-        CAST(json_extract(item.value, '$.runCount') AS INTEGER) AS run_count
+        json_extract(item.value, '$.runtime') AS runtime,
+        json_extract(item.value, '$.provider') AS provider,
+        json_extract(item.value, '$.endpointHost') AS endpoint_host,
+        json_extract(item.value, '$.model') AS model,
+        CAST(json_extract(item.value, '$.successCount') AS INTEGER) AS success_count,
+        CAST(json_extract(item.value, '$.failedCount') AS INTEGER) AS failed_count,
+        CAST(json_extract(item.value, '$.totalCount') AS INTEGER) AS total_count,
+        CAST(json_extract(item.value, '$.retryCount') AS INTEGER) AS retry_count,
+        CAST(json_extract(item.value, '$.retriedRunCount') AS INTEGER) AS retried_run_count,
+        CAST(json_extract(item.value, '$.retrySuccessCount') AS INTEGER) AS retry_success_count
       FROM json_each(?) AS item
     )
-    INSERT INTO stats_agent_runtime (project_name, status, run_count, updated_at)
-    SELECT project_name, status, run_count, ?
+    INSERT INTO stats_agent_runtime (
+      project_name, runtime, provider, endpoint_host, model,
+      success_count, failed_count, total_count,
+      retry_count, retried_run_count, retry_success_count, updated_at
+    )
+    SELECT
+      project_name, runtime, provider, endpoint_host, model,
+      success_count, failed_count, total_count,
+      retry_count, retried_run_count, retry_success_count, ?
     FROM rows
-    WHERE project_name != '' AND status IN ('success', 'failed')
-    ON CONFLICT(project_name, status) DO UPDATE SET
-      run_count = stats_agent_runtime.run_count + excluded.run_count,
+    WHERE project_name != ''
+    ON CONFLICT(project_name, runtime, provider, endpoint_host, model) DO UPDATE SET
+      success_count = stats_agent_runtime.success_count + excluded.success_count,
+      failed_count = stats_agent_runtime.failed_count + excluded.failed_count,
+      total_count = stats_agent_runtime.total_count + excluded.total_count,
+      retry_count = stats_agent_runtime.retry_count + excluded.retry_count,
+      retried_run_count = stats_agent_runtime.retried_run_count + excluded.retried_run_count,
+      retry_success_count = stats_agent_runtime.retry_success_count + excluded.retry_success_count,
       updated_at = excluded.updated_at
   `).bind(json, updatedAt)];
 }
 
 async function runAgentRuntimeStage(env, activityDate, projectNames, completedByProject) {
   const db = requireStatsDb(env);
+  await ensureAgentRuntimeStatsTable(db);
   const grouped = groupRowsByProject(await queryRollupAgentRuntimeRows(env, activityDate, projectNames), projectNames);
   const results = [];
   for (const projectName of uniqueProjectNames(projectNames)) {
@@ -1911,6 +2252,41 @@ export async function rollupYesterdayCronStage(env, cron) {
     }
   }
   return { activityDate, cron, stages: results };
+}
+
+// 从模型历史汇总刷新概览 AI 指标，覆盖写入以保证任务可重复执行。
+export async function refreshOverviewAiTotals(env, projectNames) {
+  const db = requireStatsDb(env);
+  const projects = projectNames
+    ? uniqueProjectNames(projectNames)
+    : uniqueProjectNames((await all(db, `
+      SELECT project_name AS projectName FROM stats_totals
+      UNION
+      SELECT project_name AS projectName FROM stats_models
+    `)).map((row) => row.projectName));
+  const updatedAt = nowText();
+
+  for (const projectName of projects) {
+    await ensureTotals(db, projectName, updatedAt);
+    await run(db, `
+      UPDATE stats_totals
+      SET
+        total_text_tokens = COALESCE((
+          SELECT SUM(total_tokens)
+          FROM stats_models
+          WHERE project_name = ? AND request_type = 'text'
+        ), 0),
+        total_generated_images = COALESCE((
+          SELECT SUM(request_count)
+          FROM stats_models
+          WHERE project_name = ? AND request_type = 'image'
+        ), 0),
+        updated_at = ?
+      WHERE project_name = ?
+    `, [projectName, projectName, updatedAt, projectName]);
+  }
+
+  return { projects, updatedAt };
 }
 
 export async function rollupYesterdayForAllProjects(env) {

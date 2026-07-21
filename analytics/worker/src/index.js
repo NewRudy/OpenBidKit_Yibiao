@@ -5,6 +5,7 @@ import { handleConfigUsage, handleModelUsage } from './routes/configUsage.js';
 import { handleGitHubRepoStats } from './routes/githubRepoStats.js';
 import { handleHealth } from './routes/health.js';
 import { handleLatest } from './routes/latest.js';
+import { handleLicenseActivate, handleLicenseConfig, handleOfflineLicense } from './routes/license.js';
 import { handleAdminNotice, handlePublicNotice } from './routes/notice.js';
 import { handleOverview } from './routes/overview.js';
 import { handleProjects } from './routes/projects.js';
@@ -12,11 +13,16 @@ import { handleRetention } from './routes/retention.js';
 import { handleAdminResources, handlePublicResources, handleResourceImage } from './routes/resources.js';
 import { handleTrack } from './routes/track.js';
 import { handleTraffic } from './routes/traffic.js';
-import { rollupYesterdayCronStage } from './services/analyticsStatsStore.js';
+import {
+  OVERVIEW_AI_TOTALS_CRON,
+  refreshOverviewAiTotals,
+  rollupYesterdayCronStage,
+} from './services/analyticsStatsStore.js';
 
 const routes = new Map([
   ['/health', (request, env) => handleHealth(env)],
   ['/track', handleTrack],
+  ['/license/activate', handleLicenseActivate],
   ['/notice', handlePublicNotice],
   ['/resources', handlePublicResources],
   ['/resource-image', handleResourceImage],
@@ -29,6 +35,8 @@ const routes = new Map([
   ['/api/ip-stats', handleIpStats],
   ['/api/traffic', handleTraffic],
   ['/api/latest', handleLatest],
+  ['/api/license-config', handleLicenseConfig],
+  ['/api/license/offline', handleOfflineLicense],
   ['/api/retention', handleRetention],
   ['/api/config-usage', handleConfigUsage],
   ['/api/model-usage', handleModelUsage],
@@ -52,6 +60,14 @@ export default {
   },
 
   async scheduled(event, env) {
-    await rollupYesterdayCronStage(env, event?.cron || '');
+    const cron = event?.cron || '';
+    await rollupYesterdayCronStage(env, cron);
+    if (cron === OVERVIEW_AI_TOTALS_CRON) {
+      try {
+        await refreshOverviewAiTotals(env);
+      } catch (error) {
+        console.error('[analytics] overview AI totals refresh failed', error?.message || String(error));
+      }
+    }
   },
 };

@@ -1,6 +1,9 @@
-export type TextModelProvider = 'jinlong' | 'volcengine' | 'deepseek' | 'longcat' | 'agnes' | 'custom';
+export type TextModelProvider = 'jinlong' | 'volcengine' | 'deepseek' | 'agnes' | 'custom';
+export type LegacyTextModelProvider = 'longcat';
+export type ConfiguredTextModelProvider = TextModelProvider | LegacyTextModelProvider;
 export type AiRequestMode = 'normal' | 'stream';
 export type UpdateChannel = 'github' | 'cloudflare';
+export type AgentRuntimeId = string;
 
 export interface TextModelConfig {
   api_key: string;
@@ -11,10 +14,10 @@ export interface TextModelConfig {
   request_mode: AiRequestMode;
 }
 
-export type TextModelProfiles = Record<TextModelProvider, TextModelConfig>;
+export type TextModelProfiles = Record<TextModelProvider, TextModelConfig> & Partial<Record<LegacyTextModelProvider, TextModelConfig>>;
 
 export interface AiConfig extends TextModelConfig {
-  text_model_provider: TextModelProvider;
+  text_model_provider: ConfiguredTextModelProvider;
   text_model_profiles: TextModelProfiles;
 }
 
@@ -64,10 +67,22 @@ export interface FileParserConfig {
   mineru_token?: string;
 }
 
+export interface ComponentsConfig {
+  file_parser: FileParserConfig;
+  mermaid_concurrency_limit: number;
+  html_concurrency_limit: number;
+}
+
+export interface AgentModeScenariosConfig {
+  existing_plan_expansion_original_outline_extraction: boolean;
+}
+
 export interface ClientConfig extends AiConfig {
   image_model: ImageModelConfig;
   image_model_profiles: ImageModelProfiles;
-  file_parser: FileParserConfig;
+  components: ComponentsConfig;
+  agent_runtime: AgentRuntimeId;
+  agent_mode_scenarios: AgentModeScenariosConfig;
   update_channel?: UpdateChannel;
   gpu_hardware_acceleration_enabled?: boolean;
   gpu_hardware_acceleration_configured?: boolean;

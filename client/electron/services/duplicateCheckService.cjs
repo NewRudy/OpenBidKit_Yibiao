@@ -16,6 +16,7 @@ const metadataLabels = {
   file_name: '文件名',
   extension: '扩展名',
   size: '文件大小',
+  file_sha256: '原始文件 SHA256',
   created_at: '文件创建时间',
   modified_at: '文件修改时间',
   accessed_at: '文件访问时间',
@@ -63,6 +64,30 @@ const metadataLabels = {
   pdf_version: 'PDF 版本',
   pdf_permissions: 'PDF 权限',
   fingerprints: 'PDF 指纹',
+  word_rsid_root: 'Word 编辑会话根 ID',
+  word_rsid_count: 'Word 编辑会话 ID 数量',
+  word_rsid_values: 'Word 编辑会话 ID 列表',
+  word_rsid_fingerprint: 'Word 编辑会话指纹',
+  ole_storage_count: 'OLE 存储数量',
+  ole_stream_count: 'OLE Stream 数量',
+  ole_stream_paths: 'OLE Stream 路径摘要',
+  ole_stream_paths_fingerprint: 'OLE Stream 路径指纹',
+  ole_stream_sizes_fingerprint: 'OLE Stream 大小指纹',
+  ole_has_macro_storage: 'OLE 宏存储',
+  ole_macro_paths: 'OLE 宏存储路径',
+  pdf_header_version: 'PDF 头版本',
+  pdf_object_count: 'PDF 对象数量',
+  pdf_startxref_count: 'PDF startxref 数量',
+  pdf_incremental_update_count: 'PDF 增量保存次数',
+  pdf_linearized: 'PDF 线性化',
+  pdf_xref_type: 'PDF XRef 类型',
+  pdf_trailer_id: 'PDF Trailer ID',
+  pdf_has_acroform: 'PDF 表单',
+  pdf_has_xfa: 'PDF XFA 表单',
+  pdf_signature_count: 'PDF 签名字段数量',
+  pdf_byterange_signature_count: 'PDF ByteRange 签名数量',
+  pdf_embedded_file_count: 'PDF 附件数量',
+  pdf_embedded_file_names: 'PDF 附件文件名',
 };
 
 const comparableKeys = new Set([
@@ -72,6 +97,11 @@ const comparableKeys = new Set([
   'bytes', 'lines', 'paragraphs', 'slides', 'notes', 'hidden_slides', 'multimedia_clips', 'total_time', 'creator',
   'producer', 'pdf_version', 'pdf_permissions', 'fingerprints', 'document_version', 'doc_security', 'shared_doc',
   'links_dirty', 'hlinks_changed',
+  'file_sha256', 'word_rsid_root', 'word_rsid_count', 'word_rsid_values', 'word_rsid_fingerprint',
+  'ole_storage_count', 'ole_stream_count', 'ole_stream_paths', 'ole_stream_paths_fingerprint', 'ole_stream_sizes_fingerprint',
+  'ole_has_macro_storage', 'ole_macro_paths', 'pdf_header_version', 'pdf_object_count', 'pdf_startxref_count',
+  'pdf_incremental_update_count', 'pdf_linearized', 'pdf_xref_type', 'pdf_trailer_id', 'pdf_has_acroform',
+  'pdf_has_xfa', 'pdf_signature_count', 'pdf_byterange_signature_count', 'pdf_embedded_file_count', 'pdf_embedded_file_names',
 ]);
 
 const dateComparableKeys = new Set(['created_at', 'modified_at', 'accessed_at', 'created', 'modified', 'last_printed']);
@@ -89,8 +119,12 @@ function stableFileId(file) {
   return file?.id || crypto.createHash('sha1').update(String(file?.file_path || file?.file_name || '')).digest('hex');
 }
 
+function getTenderFilesFromPayload(payload = {}) {
+  return Array.isArray(payload.tenderFiles) ? payload.tenderFiles : [payload.tenderFile].filter(Boolean);
+}
+
 function createSignature(payload = {}) {
-  const files = [payload.tenderFile, ...(Array.isArray(payload.bidFiles) ? payload.bidFiles : [])]
+  const files = [...getTenderFilesFromPayload(payload), ...(Array.isArray(payload.bidFiles) ? payload.bidFiles : [])]
     .filter(Boolean)
     .map((file) => `${file.file_path}|${file.size}|${file.modified_at}`);
   return crypto.createHash('sha1').update(files.join('\n')).digest('hex');
@@ -198,7 +232,7 @@ function tryDecodeBase64Text(value) {
   if (!text || text.length < 12 || text.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(text)) return '';
   try {
     const decoded = Buffer.from(text, 'base64').toString('utf8').replace(/^\uFEFF/, '').trim();
-    if (!decoded || decoded === text || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(decoded)) return '';
+    if (!decoded || decoded === text || decoded.includes('\uFFFD') || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(decoded)) return '';
     try {
       return JSON.stringify(JSON.parse(decoded));
     } catch {
@@ -209,12 +243,54 @@ function tryDecodeBase64Text(value) {
   }
 }
 
+function shouldSkipBase64Decode(key, value) {
+  const normalizedKey = String(key || '').toLowerCase();
+  if (/(^|[:_])(sha256|sha1|md5|hash|fingerprint)([:_]|$)/.test(normalizedKey)) return true;
+  return /^[0-9a-f]{32}$|^[0-9a-f]{40}$|^[0-9a-f]{64}$|^[0-9a-f]{128}$/i.test(normalizeValue(value));
+}
+
 function addDecodedBase64Fields(fields) {
   for (const [key, value] of Array.from(fields.entries())) {
     if (key.endsWith(':base64_decoded')) continue;
+    if (shouldSkipBase64Decode(key, value)) continue;
     const decoded = tryDecodeBase64Text(value);
     if (decoded) addField(fields, `${key}:base64_decoded`, decoded);
   }
+}
+
+async function hashFileSha256(filePath) {
+  const buffer = await fs.readFile(filePath);
+  return crypto.createHash('sha256').update(buffer).digest('hex');
+}
+
+function hashText(value) {
+  return crypto.createHash('sha256').update(String(value || ''), 'utf8').digest('hex');
+}
+
+function yesNo(value) {
+  return value ? '是' : '否';
+}
+
+function countMatches(value, pattern) {
+  const text = String(value || '');
+  const regexp = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`);
+  let count = 0;
+  while (regexp.exec(text)) count += 1;
+  return count;
+}
+
+function uniqueSortedValues(values) {
+  return Array.from(new Set((Array.isArray(values) ? values : [])
+    .map((item) => normalizeValue(item))
+    .filter(Boolean)))
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function summarizeValues(values, limit = 80) {
+  const sorted = uniqueSortedValues(values);
+  if (!sorted.length) return '';
+  const visible = sorted.slice(0, limit).join('；');
+  return sorted.length > limit ? `${visible}；...共${sorted.length}项` : visible;
 }
 
 function xmlText(xml, tagName) {
@@ -237,6 +313,37 @@ function decodeXml(value) {
 function readZipText(zip, entryName) {
   const entry = zip.getEntry(entryName);
   return entry ? entry.getData().toString('utf8') : '';
+}
+
+function formatDocxTotalTime(value) {
+  const text = normalizeValue(value);
+  if (!text) return '';
+  return /^\d+$/.test(text) ? `${text} 分钟` : text;
+}
+
+function addDocxRsidFields(fields, zip) {
+  const values = new Set();
+  let root = '';
+  const entries = zip.getEntries().filter((entry) => /^word\/.*\.xml$/i.test(entry.entryName || ''));
+  const rsidPattern = /\b(?:[A-Za-z0-9_]+:)?(rsid[A-Za-z0-9]*)=["']([0-9A-Fa-f]{1,16})["']/g;
+
+  for (const entry of entries) {
+    const xml = entry.getData().toString('utf8');
+    let match;
+    while ((match = rsidPattern.exec(xml))) {
+      const attr = String(match[1] || '').toLowerCase();
+      const value = String(match[2] || '').toUpperCase();
+      if (!value) continue;
+      values.add(value);
+      if (attr === 'rsidroot' && !root) root = value;
+    }
+  }
+
+  const sorted = uniqueSortedValues(Array.from(values));
+  addField(fields, 'word_rsid_root', root);
+  addField(fields, 'word_rsid_count', sorted.length);
+  addField(fields, 'word_rsid_values', summarizeValues(sorted));
+  if (sorted.length) addField(fields, 'word_rsid_fingerprint', hashText(sorted.join('\n')));
 }
 
 const SUMMARY_PROPERTY_MAP = {
@@ -559,6 +666,26 @@ function addOleSignalFields(fields, cfb) {
   }
 }
 
+function addOleStructureFields(fields, cfb) {
+  const entries = cfb.FileIndex.map((entry, index) => ({
+    entry,
+    path: normalizeValue(cfb.FullPaths[index] || entry.name || `stream_${index}`),
+  })).filter((item) => item.path);
+  const streamEntries = entries.filter((item) => item.entry?.type === 2 || item.entry?.content);
+  const storageEntries = entries.filter((item) => item.entry?.type === 1);
+  const streamPaths = streamEntries.map((item) => item.path.replace(/^\/Root Entry\/?/i, ''));
+  const streamSizes = streamEntries.map((item) => `${item.path}:${item.entry?.content?.length || item.entry?.size || 0}`);
+  const macroPaths = streamPaths.filter((item) => /(^|[\/\\])(?:vba|macros?|vbaProject\.bin|dir)([\/\\]|$)/i.test(item));
+
+  addField(fields, 'ole_storage_count', storageEntries.length);
+  addField(fields, 'ole_stream_count', streamEntries.length);
+  addField(fields, 'ole_stream_paths', summarizeValues(streamPaths, 120));
+  if (streamPaths.length) addField(fields, 'ole_stream_paths_fingerprint', hashText(uniqueSortedValues(streamPaths).join('\n')));
+  if (streamSizes.length) addField(fields, 'ole_stream_sizes_fingerprint', hashText(uniqueSortedValues(streamSizes).join('\n')));
+  addField(fields, 'ole_has_macro_storage', yesNo(macroPaths.length > 0));
+  addField(fields, 'ole_macro_paths', summarizeValues(macroPaths, 40));
+}
+
 function isOlePropertySetStreamName(value) {
   return /(?:summaryinformation|documentsummaryinformation)$/i.test(String(value || '').replace(/^.*[\\/]/, '').replace(/^\u0005|^!/, ''));
 }
@@ -600,7 +727,7 @@ async function extractDocxMetadata(filePath) {
   addField(fields, 'characters', xmlText(app, 'Characters'));
   addField(fields, 'lines', xmlText(app, 'Lines'));
   addField(fields, 'paragraphs', xmlText(app, 'Paragraphs'));
-  addField(fields, 'total_time', xmlText(app, 'TotalTime'));
+  addField(fields, 'total_time', formatDocxTotalTime(xmlText(app, 'TotalTime')));
 
   for (const match of custom.matchAll(/<property\b[^>]*\bname="([^"]+)"[^>]*>([\s\S]*?)<\/property>/gi)) {
     const key = `custom:${decodeXml(match[1])}`;
@@ -608,6 +735,7 @@ async function extractDocxMetadata(filePath) {
     addField(fields, key, valueMatch ? decodeXml(valueMatch[1]) : decodeXml(match[2]));
   }
 
+  addDocxRsidFields(fields, zip);
   addWpsSignalFields(fields);
   return fields;
 }
@@ -625,6 +753,7 @@ async function extractOleMetadata(filePath) {
   if (documentSummary) {
     for (const [key, value] of parsePropertySetStream(documentSummary.content, DOC_SUMMARY_PROPERTY_MAP).entries()) addField(fields, key, value);
   }
+  addOleStructureFields(fields, cfb);
   addOleSignalFields(fields, cfb);
   addWpsSignalFields(fields);
   return fields;
@@ -813,6 +942,89 @@ function addPdfRawFields(fields, buffer) {
   for (const snippet of collectBinarySignalSnippets(buffer)) addListField(fields, 'pdf_raw:signals', snippet);
 }
 
+function decodePdfName(value) {
+  return String(value || '').replace(/#([0-9a-fA-F]{2})/g, (match, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+function decodePdfTokenString(token) {
+  const value = String(token || '').trim();
+  if (!value) return '';
+  if (value.startsWith('(') && value.endsWith(')')) return decodePdfLiteralString(value.slice(1, -1));
+  if (value.startsWith('<') && value.endsWith('>')) return decodePdfHexString(value.slice(1, -1));
+  if (value.startsWith('/')) return decodePdfName(value.slice(1));
+  return value;
+}
+
+function normalizePdfIdToken(token) {
+  const value = String(token || '').trim();
+  if (value.startsWith('<') && value.endsWith('>')) return `<${value.slice(1, -1).replace(/\s+/g, '').toLowerCase()}>`;
+  return decodePdfTokenString(value);
+}
+
+function extractPdfTrailerIds(text) {
+  const ids = [];
+  const pattern = /\/ID\s*\[\s*(<[^>\r\n]{1,512}>|\((?:\\.|[^\\)]){0,512}\))\s*(<[^>\r\n]{1,512}>|\((?:\\.|[^\\)]){0,512}\))/g;
+  let match;
+  while ((match = pattern.exec(text))) {
+    const first = normalizePdfIdToken(match[1]);
+    const second = normalizePdfIdToken(match[2]);
+    if (first || second) ids.push([first, second].filter(Boolean).join(' / '));
+  }
+  return uniqueSortedValues(ids);
+}
+
+function extractPdfAttachmentNames(text) {
+  const names = [];
+  const filespecPattern = /\/Type\s*\/Filespec\b/g;
+  const stringToken = '(\\((?:\\\\.|[^\\\\)]){0,500}\\)|<[0-9a-fA-F\\s]{2,1000}>|\/[^\\s<>\\[\\]()/]{1,300})';
+  const ufPattern = new RegExp(`/UF\\s*${stringToken}`);
+  const fPattern = new RegExp(`/F\\s*${stringToken}`);
+  let match;
+  while ((match = filespecPattern.exec(text))) {
+    const chunk = text.slice(match.index, Math.min(text.length, match.index + 2200));
+    const nameMatch = chunk.match(ufPattern) || chunk.match(fPattern);
+    const name = decodePdfTokenString(nameMatch?.[1] || '');
+    if (name) names.push(name);
+  }
+  return uniqueSortedValues(names);
+}
+
+function addPdfStructureFields(fields, buffer) {
+  const text = buffer.toString('latin1');
+  const headerVersion = text.slice(0, 1024).match(/%PDF-(\d\.\d)/)?.[1] || '';
+  const objectCount = countMatches(text, /(?:^|[\r\n])\s*\d+\s+\d+\s+obj\b/g);
+  const startxrefCount = countMatches(text, /(?:^|[\r\n])startxref\b/g);
+  const hasClassicXref = /(?:^|[\r\n])xref(?:\s|[\r\n])/.test(text);
+  const xrefStreamCount = countMatches(text, /\/Type\s*\/XRef\b/g);
+  const xrefTypes = [];
+  if (hasClassicXref) xrefTypes.push('传统 xref 表');
+  if (xrefStreamCount) xrefTypes.push('XRef 对象流');
+
+  addField(fields, 'pdf_header_version', headerVersion);
+  addField(fields, 'pdf_object_count', objectCount);
+  addField(fields, 'pdf_startxref_count', startxrefCount);
+  addField(fields, 'pdf_incremental_update_count', Math.max(0, startxrefCount - 1));
+  addField(fields, 'pdf_linearized', yesNo(/\/Linearized\s+\d/.test(text.slice(0, 4096))));
+  addField(fields, 'pdf_xref_type', xrefTypes.join('；') || '未识别');
+  addField(fields, 'pdf_trailer_id', summarizeValues(extractPdfTrailerIds(text), 8));
+}
+
+function addPdfFormSignatureAttachmentFields(fields, buffer) {
+  const text = buffer.toString('latin1');
+  const byteRangeSignatureCount = countMatches(text, /\/ByteRange\s*\[/g);
+  const signatureFieldCount = countMatches(text, /\/FT\s*\/Sig\b/g);
+  const signatureObjectCount = countMatches(text, /\/Type\s*\/Sig\b/g);
+  const embeddedFileCount = countMatches(text, /\/Type\s*\/EmbeddedFile\b/g);
+  const attachmentNames = extractPdfAttachmentNames(text);
+
+  addField(fields, 'pdf_has_acroform', yesNo(/\/AcroForm\b/.test(text)));
+  addField(fields, 'pdf_has_xfa', yesNo(/\/XFA\b/.test(text)));
+  addField(fields, 'pdf_signature_count', Math.max(signatureFieldCount, signatureObjectCount, byteRangeSignatureCount));
+  addField(fields, 'pdf_byterange_signature_count', byteRangeSignatureCount);
+  addField(fields, 'pdf_embedded_file_count', Math.max(embeddedFileCount, attachmentNames.length));
+  addField(fields, 'pdf_embedded_file_names', summarizeValues(attachmentNames, 40));
+}
+
 async function extractPdfMetadata(filePath) {
   const buffer = await fs.readFile(filePath);
   const parser = new PDFParse({ data: buffer });
@@ -836,6 +1048,8 @@ async function extractPdfMetadata(filePath) {
     addField(fields, 'fingerprints', result.fingerprints);
     addField(fields, 'pdf_permissions', result.permission);
     addPdfRawFields(fields, buffer);
+    addPdfStructureFields(fields, buffer);
+    addPdfFormSignatureAttachmentFields(fields, buffer);
     addWpsSignalFields(fields);
   } finally {
     await parser.destroy();
@@ -852,6 +1066,7 @@ async function extractMetadata(file) {
   addField(fields, 'created_at', stats.birthtime.toISOString());
   addField(fields, 'modified_at', stats.mtime.toISOString());
   addField(fields, 'accessed_at', stats.atime.toISOString());
+  addField(fields, 'file_sha256', await hashFileSha256(file.file_path));
 
   try {
     const extension = String(file.extension || '').toLowerCase();
@@ -1536,6 +1751,241 @@ function splitContentSentences(markdown) {
   return sentences;
 }
 
+function normalizeTenderComparableText(value) {
+  let text = normalizeContentSentence(value)
+    .normalize('NFKC')
+    .replace(/\\([\[\]().{}<>#+=\-])/g, '$1')
+    .replace(/[‐‑‒–—―]/g, '-')
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/（/g, '(')
+    .replace(/）/g, ')')
+    .replace(/，/g, ',')
+    .replace(/。/g, '.')
+    .replace(/；/g, ';')
+    .replace(/：/g, ':')
+    .replace(/≥|大于等于|不低于|不少于/g, '>=')
+    .replace(/≤|小于等于|不高于|不超过/g, '<=')
+    .replace(/(\d)\s*[xX×]\s*(\d)/g, '$1×$2')
+    .replace(/(\d{4})\s*年\s*0?(\d{1,2})\s*月\s*0?(\d{1,2})\s*日/g, (_match, year, month, day) => `${year}年${Number(month)}月${Number(day)}日`)
+    .replace(/\b(\d{4})[-/.](0?\d{1,2})[-/.](0?\d{1,2})\b/g, (_match, year, month, day) => `${year}年${Number(month)}月${Number(day)}日`)
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  text = stripTenderTablePrefix(text);
+  text = stripTenderDirectoryPageTail(text);
+  return text.trim();
+}
+
+function stripTenderTablePrefix(value) {
+  let text = String(value || '').trim();
+  const prefixes = ['技术要求', '招标要求', '评分标准', '评标标准', '投标应答', '偏离说明'];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const prefix of prefixes) {
+      const pattern = new RegExp(`^${prefix}\\s*[:：]?\\s*(?:\\d+(?:\\.\\d+)*\\s*[.)、．]?\\s*)?`, 'i');
+      const next = text.replace(pattern, '').trim();
+      if (next !== text && next) {
+        text = next;
+        changed = true;
+        break;
+      }
+    }
+  }
+  return text;
+}
+
+function stripTenderDirectoryPageTail(value) {
+  let text = String(value || '').trim();
+  if (!/(目录|页码|检索|评分因素|评标标准|评分标准)/.test(text)) return text;
+  text = text
+    .replace(/\s*(?:第\s*)?\d{1,4}\s*页\s*$/i, '')
+    .replace(/\s*P\s*\d{1,4}(?:\s*[-~至]\s*P?\s*\d{1,4})?\s*$/i, '')
+    .replace(/(?:\.{2,}|…{2,}|·{2,}|\s{2,})\s*\d{1,4}\s*$/g, '')
+    .replace(/\s+\d{1,4}\s*$/g, '');
+  return text.trim();
+}
+
+function buildTenderStrictKey(value) {
+  return normalizeTenderComparableText(value)
+    .replace(/[\s　]+/g, '')
+    .replace(/[.,，。;；:：、!！?？"'“”‘’《》<>〈〉()[\]【】{}]/g, '')
+    .toLowerCase();
+}
+
+function buildTenderLooseText(value) {
+  return normalizeTenderComparableText(value)
+    .replace(/[\s　]+/g, '')
+    .replace(/[.,，。;；:：、!！?？"'“”‘’《》<>〈〉()[\]【】{}]/g, '')
+    .toLowerCase();
+}
+
+function buildTenderSkeletonKey(value) {
+  let text = normalizeTenderComparableText(value)
+    .replace(/\b\d{4}年\d{1,2}月\d{1,2}日\b/g, '{date}')
+    .replace(/\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b/g, '{date}')
+    .replace(/\b[A-Z]{2,}[-A-Z0-9]{4,}\b/gi, '{code}')
+    .replace(/\d+(?:\.\d+)?\s*万元/g, '{money}')
+    .replace(/\d+(?:\.\d+)?\s*元/g, '{money}')
+    .replace(/\d+(?:\.\d+)?\s*%/g, '{percent}')
+    .replace(/\d+(?:\.\d+)?\s*分/g, '{score}')
+    .replace(/P\s*\d+(?:\s*[-~至]\s*P?\s*\d+)?/gi, '{page}')
+    .replace(/\b\d+(?:\.\d+)?\b/g, '{num}');
+  text = text
+    .replace(/[\s　]+/g, '')
+    .replace(/[.,，。;；:：、!！?？"'“”‘’《》<>〈〉()[\]【】{}]/g, '')
+    .toLowerCase();
+  return text;
+}
+
+function isTenderSkeletonAllowed(value, skeletonKey) {
+  const text = normalizeTenderComparableText(value);
+  const compactLength = buildTenderLooseText(text).length;
+  if (!skeletonKey || skeletonKey.length < 8 || !/[{}]/.test(skeletonKey)) return false;
+  if (compactLength >= 18) return true;
+  return /(评分|评标|分值|计分|内容无瑕疵|内容存在|页码检索|合同复印件|技术要求|招标要求)/.test(text);
+}
+
+const tenderFieldDenyPattern = /(供应商名称|供应商地址|法定代表人|供应商代表|授权代表|被授权人|委托代理人|联系人|联系电话|电话|手机|邮政编码|邮箱|电子邮箱|开户|账号|银行|报价|投标报价|投标总价|合同金额|金额|总价)/;
+const tenderFieldAllowPattern = /^(投标日期|日期|项目名称|项目编号|采购人|采购代理机构|评分因素及评标标准页码检索|投标文件总目录|目录|附件\d*|投标书|开标一览表|报价分项一览表|投标产品配置清单|商务要求点对点应答表|技术要求点对点应答表|主要相关业绩一览表|政府采购政策情况表|中小微企业声明函|非残疾人福利性单位声明函)$/;
+
+function normalizeTenderFieldName(value) {
+  return String(value || '')
+    .replace(/[\s　]+/g, '')
+    .replace(/[：:]+$/g, '')
+    .replace(/[()（）【】\[\]《》]/g, '')
+    .trim();
+}
+
+function parseTenderFormatField(value) {
+  const text = normalizeTenderComparableText(value);
+  if (!text) return null;
+  if (/^评分因素及评标标准页码检索(?:\s+\d{1,4}|\s+P?\d{1,4}(?:[-~至]P?\d{1,4})?)?$/i.test(text)) {
+    return { field: '评分因素及评标标准页码检索', tail: text.replace(/^评分因素及评标标准页码检索/i, '').trim() };
+  }
+
+  const colonIndex = text.indexOf(':');
+  if (colonIndex > 0 && colonIndex <= 24) {
+    const field = normalizeTenderFieldName(text.slice(0, colonIndex));
+    const tail = text.slice(colonIndex + 1).trim();
+    return field ? { field, tail } : null;
+  }
+
+  const title = normalizeTenderFieldName(stripTenderDirectoryPageTail(text));
+  return tenderFieldAllowPattern.test(title) ? { field: title, tail: text.slice(title.length).trim() } : null;
+}
+
+function isTenderFieldAllowed(field) {
+  if (!field || tenderFieldDenyPattern.test(field)) return false;
+  return tenderFieldAllowPattern.test(field);
+}
+
+function isSafeTenderFieldTail(value) {
+  const tail = normalizeTenderComparableText(value).trim();
+  if (!tail) return true;
+  if (/^(?:\d{4}年\d{1,2}月\d{1,2}日|\d{4}[-/.]\d{1,2}[-/.]\d{1,2})$/.test(tail)) return true;
+  if (/^(?:第\s*)?\d{1,4}\s*页?$/.test(tail)) return true;
+  if (/^P\s*\d{1,4}(?:\s*[-~至]\s*P?\s*\d{1,4})?$/i.test(tail)) return true;
+  if (/^[A-Z0-9-]{4,}$/i.test(tail)) return true;
+  return tail.length <= 36 && /(天津港保税区消防救援支队|消防装备管理系统项目|天津众信招标咨询有限公司)/.test(tail);
+}
+
+function charBigrams(value) {
+  const text = buildTenderLooseText(value);
+  if (!text) return new Set();
+  if (text.length === 1) return new Set([text]);
+  const grams = new Set();
+  for (let index = 0; index < text.length - 1; index += 1) grams.add(text.slice(index, index + 2));
+  return grams;
+}
+
+function diceSimilarityFromShared(shared, leftSize, rightSize) {
+  return (2 * shared) / Math.max(leftSize + rightSize, 1);
+}
+
+function shouldApplyNearTenderMatch(value) {
+  const text = buildTenderLooseText(value);
+  if (text.length >= 12) return true;
+  return /(评分|评标|页码|投标日期|日期|技术要求|招标要求)/.test(normalizeTenderComparableText(value));
+}
+
+function buildTenderSourceMatcher(tenderSentences) {
+  const exactSet = new Set();
+  const strictSet = new Set();
+  const skeletonSet = new Set();
+  const fieldSet = new Set();
+  const entries = [];
+  const gramIndex = new Map();
+
+  for (const sentence of tenderSentences) {
+    const source = sentence?.sentence || sentence?.normalized || '';
+    const normalized = sentence?.normalized || normalizeContentSentence(source);
+    const strictKey = buildTenderStrictKey(normalized);
+    const skeletonKey = buildTenderSkeletonKey(normalized);
+    const grams = charBigrams(normalized);
+    if (normalized) exactSet.add(normalized);
+    if (strictKey && strictKey.length >= 3) strictSet.add(strictKey);
+    if (isTenderSkeletonAllowed(normalized, skeletonKey)) skeletonSet.add(skeletonKey);
+    const parsedField = parseTenderFormatField(normalized);
+    if (parsedField && isTenderFieldAllowed(parsedField.field)) fieldSet.add(parsedField.field);
+    const entry = { normalized, strictKey, skeletonKey, looseText: buildTenderLooseText(normalized), grams };
+    const entryIndex = entries.length;
+    entries.push(entry);
+    for (const gram of grams) {
+      const list = gramIndex.get(gram) || [];
+      list.push(entryIndex);
+      gramIndex.set(gram, list);
+    }
+  }
+
+  function matchNear(sentence) {
+    if (!shouldApplyNearTenderMatch(sentence.normalized)) return null;
+    const grams = charBigrams(sentence.normalized);
+    if (grams.size < 4) return null;
+    const candidates = new Map();
+    for (const gram of grams) {
+      for (const index of gramIndex.get(gram) || []) candidates.set(index, (candidates.get(index) || 0) + 1);
+    }
+
+    let best = null;
+    for (const [index, shared] of candidates.entries()) {
+      const entry = entries[index];
+      if (!entry?.grams?.size) continue;
+      const shorter = Math.min(grams.size, entry.grams.size);
+      const longer = Math.max(grams.size, entry.grams.size);
+      const containment = shared / Math.max(shorter, 1);
+      const dice = diceSimilarityFromShared(shared, grams.size, entry.grams.size);
+      const lengthRatio = shorter / Math.max(longer, 1);
+      const compactLength = buildTenderLooseText(sentence.normalized).length;
+      const allowed = compactLength >= 30
+        ? containment >= 0.9 && dice >= 0.82 && lengthRatio >= 0.5
+        : containment >= 0.95 && dice >= 0.88 && lengthRatio >= 0.55;
+      if (!allowed) continue;
+      if (!best || dice > best.dice) best = { reason: 'near', dice, containment, tender: entry.normalized };
+    }
+    return best;
+  }
+
+  return {
+    tenderSentenceCount: exactSet.size,
+    match(sentence) {
+      const normalized = sentence?.normalized || '';
+      if (!normalized) return null;
+      if (exactSet.has(normalized)) return { reason: 'exact' };
+      const strictKey = buildTenderStrictKey(normalized);
+      if (strictKey && strictSet.has(strictKey)) return { reason: 'strict' };
+      const parsedField = parseTenderFormatField(normalized);
+      if (parsedField && isTenderFieldAllowed(parsedField.field) && fieldSet.has(parsedField.field) && isSafeTenderFieldTail(parsedField.tail)) {
+        return { reason: 'field' };
+      }
+      const skeletonKey = buildTenderSkeletonKey(normalized);
+      if (isTenderSkeletonAllowed(normalized, skeletonKey) && skeletonSet.has(skeletonKey)) return { reason: 'skeleton' };
+      return matchNear(sentence);
+    },
+  };
+}
+
 function buildDuplicateSentences(globalSentences) {
   return Array.from(globalSentences.values())
     .filter((item) => item.file_ids.length > 1)
@@ -1801,6 +2251,7 @@ function createDuplicateCheckService({ app, configStore, workspaceStore } = {}) 
     const current = workspaceStore.loadDuplicateCheck() || {};
     const currentSignature = createSignature({
       tenderFile: current.tenderFile || null,
+      tenderFiles: Array.isArray(current.tenderFiles) ? current.tenderFiles : [],
       bidFiles: Array.isArray(current.bidFiles) ? current.bidFiles : [],
     });
     return currentSignature === signature;
@@ -1846,15 +2297,16 @@ function createDuplicateCheckService({ app, configStore, workspaceStore } = {}) 
     return next;
   }
 
-  async function runContentExtraction(allFiles, webContents, signature, developerLogger, tenderFile) {
-    const config = configStore ? configStore.load() : { file_parser: { provider: 'local' } };
+  async function runContentExtraction(allFiles, webContents, signature, developerLogger, tenderFiles) {
+    const config = configStore ? configStore.load() : { components: { file_parser: { provider: 'local' } } };
     const dir = getDuplicateCheckContentDir(app);
     await fs.mkdir(dir, { recursive: true });
     const results = [];
+    const tenderFileIds = new Set((Array.isArray(tenderFiles) ? tenderFiles : []).map(stableFileId));
     developerLogger?.write('duplicate.content_extraction.started', {
       signature,
       file_count: allFiles.length,
-      files: allFiles.map((file) => summarizeDuplicateFileForLog(file, file === tenderFile ? 'tender' : 'bid')),
+      files: allFiles.map((file) => summarizeDuplicateFileForLog(file, tenderFileIds.has(stableFileId(file)) ? 'tender' : 'bid')),
     });
     updateAnalysis({ contentExtraction: { status: 'running', completed: 0, total: allFiles.length }, message: '正在提取正文内容' }, webContents, signature);
 
@@ -1869,13 +2321,13 @@ function createDuplicateCheckService({ app, configStore, workspaceStore } = {}) 
         await fs.writeFile(contentPath, markdown, 'utf-8');
         results.push({ file_id: fileId, file_name: file.file_name, status: 'success', content_path: contentPath, content_length: markdown.length });
         developerLogger?.write('duplicate.content_extraction.file.completed', {
-          file: summarizeDuplicateFileForLog(file, file === tenderFile ? 'tender' : 'bid'),
+          file: summarizeDuplicateFileForLog(file, tenderFileIds.has(fileId) ? 'tender' : 'bid'),
           markdown_metrics: textMetrics(markdown),
         });
       } catch (error) {
         results.push({ file_id: fileId, file_name: file.file_name, status: 'error', error: error.message || '正文提取失败' });
         developerLogger?.write('duplicate.content_extraction.file.error', {
-          file: summarizeDuplicateFileForLog(file, file === tenderFile ? 'tender' : 'bid'),
+          file: summarizeDuplicateFileForLog(file, tenderFileIds.has(fileId) ? 'tender' : 'bid'),
           error: compactLogError(error),
         });
       }
@@ -1890,6 +2342,15 @@ function createDuplicateCheckService({ app, configStore, workspaceStore } = {}) 
       result: summarizeContentExtractionResults(results),
     });
     return results;
+  }
+
+  async function readCombinedTenderMarkdown(contentFiles, tenderFiles) {
+    const parts = [];
+    for (const file of Array.isArray(tenderFiles) ? tenderFiles : []) {
+      const markdown = await readContentMarkdown(contentFiles, file);
+      if (String(markdown || '').trim()) parts.push(String(markdown).trim());
+    }
+    return parts.join('\n\n');
   }
 
   async function runMetadataExtraction(bidFiles, webContents, signature, developerLogger) {
@@ -1939,18 +2400,18 @@ function createDuplicateCheckService({ app, configStore, workspaceStore } = {}) 
     return fs.readFile(item.content_path, 'utf-8');
   }
 
-  async function runOutlineAnalysis(tenderFile, bidFiles, contentFiles, signature, webContents, developerLogger) {
+  async function runOutlineAnalysis(tenderFiles, bidFiles, contentFiles, signature, webContents, developerLogger) {
     developerLogger?.write('duplicate.outline_analysis.started', {
       signature,
       bid_file_count: bidFiles.length,
-      tender_file: summarizeDuplicateFileForLog(tenderFile, 'tender'),
+      tender_files: (Array.isArray(tenderFiles) ? tenderFiles : []).map((file) => summarizeDuplicateFileForLog(file, 'tender')),
     });
     updateOutlineAnalysis({ status: 'running', progress: 5, extraction: { status: 'running', completed: 0, total: bidFiles.length }, message: '正在准备目录分析' }, webContents, signature);
     const results = [];
     let tenderSentences = [];
-    if (tenderFile) {
+    if (Array.isArray(tenderFiles) && tenderFiles.length) {
       try {
-        const tenderMarkdown = await readContentMarkdown(contentFiles, tenderFile);
+        const tenderMarkdown = await readCombinedTenderMarkdown(contentFiles, tenderFiles);
         tenderSentences = splitTenderSentences(tenderMarkdown);
       } catch (error) {
         updateOutlineAnalysis({ message: `招标文件句子白名单生成失败，继续对比投标文件目录：${error.message || error}` }, webContents, signature);
@@ -2031,18 +2492,19 @@ function createDuplicateCheckService({ app, configStore, workspaceStore } = {}) 
     return results;
   }
 
-  async function runContentDuplicateAnalysis(tenderFile, bidFiles, contentFiles, signature, webContents, developerLogger) {
+  async function runContentDuplicateAnalysis(tenderFiles, bidFiles, contentFiles, signature, webContents, developerLogger) {
     developerLogger?.write('duplicate.content_analysis.started', {
       signature,
       bid_file_count: bidFiles.length,
-      tender_file: summarizeDuplicateFileForLog(tenderFile, 'tender'),
+      tender_files: (Array.isArray(tenderFiles) ? tenderFiles : []).map((file) => summarizeDuplicateFileForLog(file, 'tender')),
     });
     updateContentAnalysis({ status: 'running', progress: 5, extraction: { status: 'running', completed: 0, total: bidFiles.length }, message: '正在准备正文比对' }, webContents, signature);
-    let tenderSentenceSet = new Set();
-    if (tenderFile) {
+    let tenderMatcher = buildTenderSourceMatcher([]);
+    const tenderMatchReasonCounts = {};
+    if (Array.isArray(tenderFiles) && tenderFiles.length) {
       try {
-        const tenderMarkdown = await readContentMarkdown(contentFiles, tenderFile);
-        tenderSentenceSet = new Set(splitContentSentences(tenderMarkdown).map((item) => item.normalized));
+        const tenderMarkdown = await readCombinedTenderMarkdown(contentFiles, tenderFiles);
+        tenderMatcher = buildTenderSourceMatcher(splitContentSentences(tenderMarkdown));
       } catch (error) {
         updateContentAnalysis({ message: `招标文件句子白名单生成失败，继续比对投标正文：${error.message || error}` }, webContents, signature);
         developerLogger?.write('duplicate.content_analysis.tender_whitelist.error', {
@@ -2051,7 +2513,7 @@ function createDuplicateCheckService({ app, configStore, workspaceStore } = {}) 
       }
     }
     developerLogger?.write('duplicate.content_analysis.tender_whitelist.completed', {
-      tender_sentence_count: tenderSentenceSet.size,
+      tender_sentence_count: tenderMatcher.tenderSentenceCount,
     });
 
     const globalSentences = new Map();
@@ -2067,8 +2529,11 @@ function createDuplicateCheckService({ app, configStore, workspaceStore } = {}) 
         totalSentenceCount += sentences.length;
         const local = new Map();
         for (const sentence of sentences) {
-          if (tenderSentenceSet.has(sentence.normalized)) {
+          const tenderMatch = tenderMatcher.match(sentence);
+          if (tenderMatch) {
             tenderMatchedSentenceCount += 1;
+            const reason = tenderMatch.reason || 'unknown';
+            tenderMatchReasonCounts[reason] = (tenderMatchReasonCounts[reason] || 0) + 1;
             continue;
           }
           const current = local.get(sentence.normalized) || { sentence: sentence.sentence, count: 0, order: firstOrder++ };
@@ -2093,7 +2558,7 @@ function createDuplicateCheckService({ app, configStore, workspaceStore } = {}) 
       updateContentAnalysis({
         status: 'running',
         progress: bidFiles.length ? Math.round((globalSentences.size ? 10 : 5) + (bidFiles.indexOf(file) + 1) / bidFiles.length * 80) : 85,
-        tenderSentenceCount: tenderSentenceSet.size,
+        tenderSentenceCount: tenderMatcher.tenderSentenceCount,
         tenderMatchedSentenceCount,
         totalSentenceCount,
         extraction: { status: 'running', completed: bidFiles.indexOf(file) + 1, total: bidFiles.length },
@@ -2107,7 +2572,7 @@ function createDuplicateCheckService({ app, configStore, workspaceStore } = {}) 
       progress: 100,
       message: '正文比对完成',
       signature,
-      tenderSentenceCount: tenderSentenceSet.size,
+      tenderSentenceCount: tenderMatcher.tenderSentenceCount,
       tenderMatchedSentenceCount,
       totalSentenceCount,
       extraction: { status: 'success', completed: bidFiles.length, total: bidFiles.length },
@@ -2116,8 +2581,9 @@ function createDuplicateCheckService({ app, configStore, workspaceStore } = {}) 
     developerLogger?.write('duplicate.content_analysis.completed', {
       signature,
       status: 'success',
-      tender_sentence_count: tenderSentenceSet.size,
+      tender_sentence_count: tenderMatcher.tenderSentenceCount,
       tender_matched_sentence_count: tenderMatchedSentenceCount,
+      tender_match_reason_counts: tenderMatchReasonCounts,
       total_sentence_count: totalSentenceCount,
       duplicate_sentence_count: duplicateSentences.length,
     });
@@ -2213,26 +2679,27 @@ function createDuplicateCheckService({ app, configStore, workspaceStore } = {}) 
   }
 
   async function run(signature, payload, target, developerLogger) {
-    const tenderFile = payload.tenderFile || null;
+    const tenderFiles = getTenderFilesFromPayload(payload);
+    const tenderFile = tenderFiles[0] || null;
     const bidFiles = Array.isArray(payload.bidFiles) ? payload.bidFiles : [];
-    const allFiles = [tenderFile, ...bidFiles].filter(Boolean);
+    const allFiles = [...tenderFiles, ...bidFiles].filter(Boolean);
     developerLogger?.write('duplicate.pipeline.started', {
       signature,
-      tender_file: summarizeDuplicateFileForLog(tenderFile, 'tender'),
+      tender_files: tenderFiles.map((file) => summarizeDuplicateFileForLog(file, 'tender')),
       bid_file_count: bidFiles.length,
       file_count: allFiles.length,
     });
 
     try {
-      const contentPromise = runContentExtraction(allFiles, target, signature, developerLogger, tenderFile);
+      const contentPromise = runContentExtraction(allFiles, target, signature, developerLogger, tenderFiles);
       const metadataFiles = await runMetadataExtraction(bidFiles, target, signature, developerLogger);
       updateOutlineAnalysis({ status: 'running', progress: 1, message: '元数据提取完成，等待正文内容用于目录分析', extraction: { status: 'running', completed: 0, total: bidFiles.length } }, target, signature);
       updateContentAnalysis({ status: 'running', progress: 1, message: '元数据提取完成，等待正文内容用于正文比对', extraction: { status: 'running', completed: 0, total: bidFiles.length } }, target, signature);
       updateImageAnalysis({ status: 'running', progress: 1, message: '元数据提取完成，等待正文内容用于图片比对', extraction: { status: 'running', completed: 0, total: bidFiles.length } }, target, signature);
       const contentFiles = await contentPromise;
       const [outlineFiles, contentResult, imageResult] = await Promise.all([
-        runOutlineAnalysis(tenderFile, bidFiles, contentFiles, signature, target, developerLogger),
-        runContentDuplicateAnalysis(tenderFile, bidFiles, contentFiles, signature, target, developerLogger),
+        runOutlineAnalysis(tenderFiles, bidFiles, contentFiles, signature, target, developerLogger),
+        runContentDuplicateAnalysis(tenderFiles, bidFiles, contentFiles, signature, target, developerLogger),
         runImageDuplicateAnalysis(bidFiles, contentFiles, signature, target, developerLogger),
       ]);
       const failed = contentFiles.some((item) => item.status === 'error')
@@ -2266,6 +2733,7 @@ function createDuplicateCheckService({ app, configStore, workspaceStore } = {}) 
       const signature = createSignature(payload);
       const force = payload.force === true;
       const bidFiles = Array.isArray(payload.bidFiles) ? payload.bidFiles : [];
+      const tenderFiles = getTenderFilesFromPayload(payload);
       const developerLogger = createDeveloperLogger({
         app,
         config: loadDeveloperConfig(configStore),
@@ -2274,14 +2742,14 @@ function createDuplicateCheckService({ app, configStore, workspaceStore } = {}) 
         meta: {
           signature,
           force,
-          tender_file: summarizeDuplicateFileForLog(payload.tenderFile || null, 'tender'),
+          tender_files: tenderFiles.map((file) => summarizeDuplicateFileForLog(file, 'tender')),
           bid_file_count: bidFiles.length,
         },
       });
       developerLogger.write('duplicate.task.started', {
         signature,
         force,
-        tender_file: summarizeDuplicateFileForLog(payload.tenderFile || null, 'tender'),
+        tender_files: tenderFiles.map((file) => summarizeDuplicateFileForLog(file, 'tender')),
         bid_files: bidFiles.map((file) => summarizeDuplicateFileForLog(file, 'bid')),
       });
       const current = taskWorkspaceStore.loadDuplicateCheck() || {};
@@ -2305,7 +2773,8 @@ function createDuplicateCheckService({ app, configStore, workspaceStore } = {}) 
       const initialLogs = [force ? '开始重新执行标书查重分析。' : '开始执行标书查重分析。'];
       let latestLog = initialLogs[0];
       let state = taskWorkspaceStore.updateDuplicateCheck({
-        tenderFile: payload.tenderFile || null,
+        tenderFile: tenderFiles[0] || null,
+        tenderFiles,
         bidFiles,
         metadataAnalysis,
         outlineAnalysis,

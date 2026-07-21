@@ -3,20 +3,24 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const Database = require('better-sqlite3');
 const { getAgentRuntimeDir, getBundledOpencodeBinaryPath } = require('../../utils/paths.cjs');
+const { trackAgentRuntime } = require('../agent/agentRuntimeAnalytics.cjs');
 const { startOpenCodeSidecar, closeOpenCodeSidecar } = require('./opencodeServerRunner.cjs');
-const { runOpenCodeTask } = require('./opencodeHttpClient.cjs');
+const { createSession, sendPrompt, getSessionDiff } = require('./opencodeHttpClient.cjs');
+const { writeAgentInstructionsFile } = require('../agent/agentToolEnvironment.cjs');
 const {
   SELF_CHECK_TASK_ID,
   SELF_CHECK_OUTPUT_FILE,
   SELF_CHECK_TIMEOUT_MS,
   buildSelfCheckPrompt,
   compactSelfCheckError,
+  createOpenCodeDiagnosticSections,
   createEnvironmentSnapshot,
   createSelfCheckConclusion,
   createSelfCheckLogger,
   createSelfCheckSteps,
   formatSelfCheckDetails,
   getCurrentSelfCheckStage,
+  runIntegratedToolSelfCheck,
   runDirectModelSelfCheck,
   safeStat,
   snapshotWorkspace,
@@ -34,8 +38,8 @@ const WORKSPACE_WATCH_INTERVAL_MS = 2000;
 const OPENCODE_EVENT_POLL_INTERVAL_MS = 1000;
 const OPENCODE_EVENT_BATCH_LIMIT = 120;
 const BUSY_MESSAGE = 'Agent 正在处理其他任务，请耐心等待';
-const ANALYTICS_ENDPOINT = 'https://analytics.agnet.top/track';
-const ANALYTICS_PROJECT_NAME = 'yibiao-client';
+const DEFAULT_AGENT_MAX_RETRIES = 1;
+const MAX_AGENT_MAX_RETRIES = 3;
 
 function nowIso() {
   return new Date().toISOString();
@@ -46,27 +50,57 @@ function normalizeTimeoutMs(value, fallback = DEFAULT_AGENT_IDLE_TIMEOUT_MS) {
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
 }
 
-function trackAgentRuntime(app, configStore, status) {
-  const runtimeStatus = status === 'success' ? 'success' : 'failed';
-  void Promise.resolve()
-    .then(() => {
-      const config = configStore.load();
-      return fetch(ANALYTICS_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          projectName: ANALYTICS_PROJECT_NAME,
-          event: 'agent_runtime',
-          version: typeof app?.getVersion === 'function' ? app.getVersion() : '',
-          platform: process.platform,
-          arch: process.arch,
-          client_id: config.analytics_client_id || '',
-          client_created_at: config.analytics_created_at || '',
-          agent_runtime_status: runtimeStatus,
-        }),
-      });
-    })
-    .catch(() => undefined);
+function normalizeMaxRetries(value, fallback = DEFAULT_AGENT_MAX_RETRIES) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(0, Math.min(MAX_AGENT_MAX_RETRIES, Math.floor(number)));
+}
+
+function extractTextFromPromptResult(result) {
+  const parts = Array.isArray(result?.parts) ? result.parts : [];
+  return parts
+    .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text)
+    .join('\n')
+    .trim();
+}
+
+function markAgentValidationError(error) {
+  if (error && typeof error === 'object') {
+    error.agentValidationFailed = true;
+  }
+  return error;
+}
+
+function compactErrorText(error, maxLength = 1200) {
+  const lines = [
+    error?.message || String(error || '未知错误'),
+    error?.cause?.message || error?.cause?.code || error?.openCodeCause || '',
+  ].filter(Boolean);
+  const text = lines.join('\n').trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+function buildAgentRetryPrompt({ outputFile, attempt, maxRetries, error }) {
+  return `上一轮 Agent 执行没有通过程序校验或执行过程中失败。
+
+失败信息：
+${compactErrorText(error)}
+
+请继续使用当前会话和当前工作区已有文件，不要重新开始任务，不要清空工作区。
+请先检查 ${outputFile} 和必要的输入文件，定位失败原因，只做必要修复。
+修复后仍然把最终结果写入 ${outputFile}。
+
+这是第 ${attempt}/${maxRetries} 次自动修复机会。`;
+}
+
+function createRetryAttemptSummary({ attempt, error, outputContent }) {
+  return {
+    attempt,
+    at: nowIso(),
+    error: compactErrorText(error, 600),
+    output_chars: String(outputContent || '').length,
+  };
 }
 
 function safeRelativePath(value) {
@@ -156,6 +190,8 @@ function annotateAgentError(error, meta = {}) {
   error.agentOutputPath = meta.outputPath || error.agentOutputPath || '';
   error.agentPartialOutput = meta.outputContent || error.agentPartialOutput || '';
   error.agentPartialOutputChars = String(meta.outputContent || error.agentPartialOutput || '').length;
+  error.agentValidationFailed = Boolean(error.agentValidationFailed);
+  error.agentRetryAttempts = Array.isArray(error.agentRetryAttempts) ? error.agentRetryAttempts : [];
   error.openCodeRequestLog = Array.isArray(meta.requestLog) ? meta.requestLog : error.openCodeRequestLog || [];
   error.openCodeStderrTail = meta.stderrTail || error.openCodeStderrTail || '';
   error.openCodeStdoutTail = meta.stdoutTail || error.openCodeStdoutTail || '';
@@ -292,8 +328,8 @@ function getMessageRole(db, cache, messageId) {
   return role;
 }
 
-function createOpenCodeRuntimeService({ app, configStore }) {
-  const runtimeRoot = getAgentRuntimeDir(app);
+function createOpenCodeRuntimeService({ app, configStore, runtime }) {
+  const runtimeRoot = path.join(getAgentRuntimeDir(app), runtime.id);
   const serviceRuntimeRoot = path.join(runtimeRoot, 'service');
   const serviceWorkspaceDir = path.join(serviceRuntimeRoot, 'workspace');
   const tasksRoot = path.join(runtimeRoot, 'tasks');
@@ -315,6 +351,8 @@ function createOpenCodeRuntimeService({ app, configStore }) {
   let closePromise = null;
   let activeTask = null;
   let activeTaskAbortController = null;
+  const taskQueue = [];
+  let taskQueueDraining = false;
   let healthTimer = null;
   let statusTimer = null;
   let healthFailureCount = 0;
@@ -348,6 +386,15 @@ function createOpenCodeRuntimeService({ app, configStore }) {
     };
   }
 
+  function getQueuedTaskSummaries() {
+    return taskQueue.map((entry, index) => ({
+      task_id: entry.taskId,
+      title: entry.title,
+      queued_at: entry.queuedAt,
+      position: index + 1,
+    }));
+  }
+
   function getStatus() {
     return {
       phase,
@@ -359,6 +406,8 @@ function createOpenCodeRuntimeService({ app, configStore }) {
       restart_pending: restartPending,
       restart_pending_reason: restartPendingReason,
       active_task: getActiveTaskSummary(),
+      queued_count: taskQueue.length,
+      queued_tasks: getQueuedTaskSummaries(),
       proxy: sidecar?.getProxyStatus?.() || { active: 0, queued: 0, limit: 0 },
       opencode: {
         pid: sidecar?.pid || sidecar?.child?.pid || 0,
@@ -468,6 +517,72 @@ function createOpenCodeRuntimeService({ app, configStore }) {
     };
   }
 
+  function createAbortReason(signal, fallbackMessage = 'Agent 任务已取消') {
+    const reason = signal?.reason;
+    if (reason instanceof Error) {
+      return reason;
+    }
+    const error = new Error(reason ? String(reason) : fallbackMessage);
+    if (reason && typeof reason === 'object' && reason.code) {
+      error.code = reason.code;
+    }
+    return error;
+  }
+
+  function removeQueuedTask(entry, reason) {
+    const index = taskQueue.indexOf(entry);
+    if (index < 0 || entry.started) {
+      return false;
+    }
+    taskQueue.splice(index, 1);
+    entry.cleanup?.();
+    entry.reject(reason);
+    appendRuntimeEvent({
+      source: 'runtime.queue',
+      message: `Agent 排队任务已取消：${entry.title}`,
+      task_id: entry.taskId,
+      queue_length: taskQueue.length,
+    });
+    emitStatusThrottled();
+    return true;
+  }
+
+  function rejectQueuedTasks(error) {
+    const pending = taskQueue.splice(0, taskQueue.length);
+    for (const entry of pending) {
+      entry.cleanup?.();
+      entry.reject(error);
+    }
+    if (pending.length) {
+      appendRuntimeEvent({
+        source: 'runtime.queue',
+        message: `Agent 排队任务已全部取消：${pending.length} 个`,
+        queue_length: 0,
+      });
+      emitStatusThrottled();
+    }
+  }
+
+  function notifyQueuedTask(entry, position) {
+    if (typeof entry.payload.onActivity !== 'function') {
+      return;
+    }
+    try {
+      entry.payload.onActivity({
+        stage: 'queued',
+        message: position > 1
+          ? `Agent 任务排队中，前方还有 ${position - 1} 个任务。`
+          : 'Agent 任务排队中，等待当前任务结束后执行。',
+        source: 'runtime.queue',
+        visible: true,
+        activity: false,
+        meta: { task_id: entry.taskId, position, queue_length: taskQueue.length },
+      });
+    } catch (error) {
+      appendRuntimeEvent({ at: nowIso(), source: 'queue-activity-handler', message: error?.message || String(error) });
+    }
+  }
+
   function onStatus(listener) {
     if (typeof listener !== 'function') return () => {};
     listeners.add(listener);
@@ -559,6 +674,7 @@ function createOpenCodeRuntimeService({ app, configStore }) {
       sidecar = await startOpenCodeSidecar({
         app,
         configStore,
+        runtime,
         runtimeRoot: serviceRuntimeRoot,
         workspaceDir: serviceWorkspaceDir,
         timeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS,
@@ -666,6 +782,7 @@ function createOpenCodeRuntimeService({ app, configStore }) {
   function prepareStagingWorkspace(payload) {
     clearDirectoryContents(serviceWorkspaceDir);
     writeWorkspaceFiles(serviceWorkspaceDir, payload.files || []);
+    writeAgentInstructionsFile(serviceWorkspaceDir);
   }
 
   function cleanupStagingWorkspace() {
@@ -714,6 +831,110 @@ function createOpenCodeRuntimeService({ app, configStore }) {
       status: getStatus(),
       events: diagnostics.events.slice(-120),
     };
+  }
+
+  function moveDiagnosticsToArchivedWorkspace(diagnosticsPayload, archivedWorkspaceDir, outputFile) {
+    if (!diagnosticsPayload || !archivedWorkspaceDir) return diagnosticsPayload;
+    diagnosticsPayload.workspaceDir = archivedWorkspaceDir;
+    try {
+      const relativePath = safeRelativePath(outputFile);
+      diagnosticsPayload.outputPath = ensureInsideRoot(archivedWorkspaceDir, path.join(archivedWorkspaceDir, relativePath), outputFile);
+    } catch {
+      diagnosticsPayload.outputPath = path.join(archivedWorkspaceDir, path.basename(outputFile || 'agent-result.md'));
+    }
+    return diagnosticsPayload;
+  }
+
+  async function runOpenCodeTaskWithRetry({ title, prompt, outputFile, signal, agent, taskActivity, onSessionCreated, validateOutput, maxRetries, retryAttempts }) {
+    const session = await createSession(sidecar, title, { signal, onActivity: taskActivity });
+    const sessionId = session?.id || session?.sessionID || session?.session_id || '';
+    if (!sessionId) {
+      throw new Error('OpenCode session 创建成功但缺少 session id');
+    }
+    onSessionCreated?.(session);
+    let nextPrompt = prompt;
+    let lastMessageResult = null;
+    let lastText = '';
+    let validationResult = null;
+
+    for (let attemptIndex = 0; attemptIndex <= maxRetries; attemptIndex += 1) {
+      const attempt = attemptIndex + 1;
+      try {
+        lastMessageResult = await sendPrompt(sidecar, sessionId, nextPrompt, { signal, agent, onActivity: taskActivity });
+        lastText = extractTextFromPromptResult(lastMessageResult);
+        const output = readOutputContent(serviceWorkspaceDir, outputFile);
+        const candidateResult = {
+          success: true,
+          title,
+          output_file: outputFile,
+          output_content: output.content,
+          assistant_text: lastText,
+          session_id: sessionId,
+          retry_count: attemptIndex,
+          retry_attempts: [...retryAttempts],
+        };
+        if (typeof validateOutput === 'function') {
+          try {
+            validationResult = await validateOutput(candidateResult, {
+              attempt,
+              max_retries: maxRetries,
+              task_id: activeTask?.task_id || '',
+              title,
+              output_file: outputFile,
+              workspace_dir: serviceWorkspaceDir,
+              session_id: sessionId,
+              retry_attempts: [...retryAttempts],
+            });
+          } catch (validationError) {
+            throw markAgentValidationError(validationError);
+          }
+        }
+        const diff = await getSessionDiff(sidecar, sessionId, { signal, onActivity: taskActivity }).catch(() => []);
+        return {
+          session,
+          message: lastMessageResult?.info || null,
+          parts: Array.isArray(lastMessageResult?.parts) ? lastMessageResult.parts : [],
+          text: lastText,
+          diff: Array.isArray(diff) ? diff : [],
+          output,
+          validation_result: validationResult,
+          retry_count: attemptIndex,
+          retry_attempts: [...retryAttempts],
+        };
+      } catch (error) {
+        if (isUserCancelOrPause(error) || signal?.aborted || attemptIndex >= maxRetries) {
+          if (error && typeof error === 'object') {
+            error.agentRetryAttempts = [...retryAttempts];
+          }
+          throw error;
+        }
+
+        let output = { content: '' };
+        try { output = readOutputContent(serviceWorkspaceDir, outputFile); } catch {}
+        retryAttempts.push(createRetryAttemptSummary({ attempt, error, outputContent: output.content }));
+        const retryAttempt = retryAttempts.length;
+        taskActivity({
+          stage: 'retry',
+          message: `Agent 执行未通过，正在同一会话自动修复 ${retryAttempt}/${maxRetries}：${compactErrorText(error, 160)}`,
+          source: 'runtime.retry',
+          activity: true,
+          meta: {
+            attempt,
+            retry_attempt: retryAttempt,
+            max_retries: maxRetries,
+            validation_failed: Boolean(error?.agentValidationFailed),
+          },
+        });
+        nextPrompt = buildAgentRetryPrompt({
+          outputFile,
+          attempt: retryAttempt,
+          maxRetries,
+          error,
+        });
+      }
+    }
+
+    throw new Error('Agent 自动修复流程异常结束');
   }
 
   function startOpenCodeEventWatcher(sessionId, taskActivity) {
@@ -827,13 +1048,13 @@ function createOpenCodeRuntimeService({ app, configStore }) {
     return () => clearInterval(timer);
   }
 
-  async function runTask(payload = {}) {
-    if (activeTask) return createBusyResult();
-
+  async function runTaskNow(payload = {}) {
     const taskId = payload.task_id || crypto.randomUUID();
     const title = payload.title || '易标智能体任务';
     const outputFile = payload.output_file || 'agent-result.md';
     const timeoutMs = normalizeTimeoutMs(payload.timeout_ms, DEFAULT_AGENT_IDLE_TIMEOUT_MS);
+    const maxRetries = normalizeMaxRetries(payload.max_retries);
+    const retryAttempts = [];
 
     activeTask = createActiveTask({ taskId, title, timeoutMs, onActivity: payload.onActivity });
     const taskActivity = createTaskActivity(activeTask);
@@ -862,27 +1083,32 @@ function createOpenCodeRuntimeService({ app, configStore }) {
       prepareStagingWorkspace(payload);
       stopOutputWatcher = startOutputWatcher(outputFile, taskActivity);
 
-      const result = await runOpenCodeTask(sidecar, {
+      const result = await runOpenCodeTaskWithRetry({
         title,
         prompt: payload.prompt || createDefaultAgentPrompt({ task: payload.task || '请分析当前输入文件，并输出可执行结果。', outputFile }),
+        outputFile,
         signal: activeTaskAbortController.signal,
         agent: payload.agent || 'build',
-        onActivity: taskActivity,
+        taskActivity,
+        validateOutput: payload.validateOutput,
+        maxRetries,
+        retryAttempts,
         onSessionCreated: (session) => {
           stopOpenCodeEventWatcher?.();
-          stopOpenCodeEventWatcher = startOpenCodeEventWatcher(session?.id || session?.sessionID || '', taskActivity);
+          stopOpenCodeEventWatcher = startOpenCodeEventWatcher(session?.id || session?.sessionID || session?.session_id || '', taskActivity);
         },
       });
 
       taskActivity({ stage: 'output', message: '', source: 'runtime', visible: false, activity: false });
-      const output = readOutputContent(serviceWorkspaceDir, outputFile);
+      const output = result.output || readOutputContent(serviceWorkspaceDir, outputFile);
 
       taskActivity({ stage: 'archive', message: '', source: 'runtime', visible: false, activity: false });
       archivedWorkspaceDir = archiveTaskWorkspace(taskId);
-      const diagnosticsPayload = collectDiagnostics({ taskId, title, outputFile });
+      const diagnosticsPayload = moveDiagnosticsToArchivedWorkspace(collectDiagnostics({ taskId, title, outputFile }), archivedWorkspaceDir, outputFile);
+      diagnosticsPayload.retryAttempts = [...retryAttempts];
       writeTaskDiagnostics(taskId, diagnosticsPayload);
 
-      trackAgentRuntime(app, configStore, 'success');
+      trackAgentRuntime(app, configStore, runtime.id, 'success', { retryCount: result.retry_count || 0 });
 
       const taskResult = {
         success: true,
@@ -895,7 +1121,10 @@ function createOpenCodeRuntimeService({ app, configStore }) {
         output_content: output.content,
         assistant_text: result.text,
         diff: result.diff,
-        session_id: result.session?.id || '',
+        session_id: result.session?.id || result.session?.sessionID || result.session?.session_id || '',
+        retry_count: result.retry_count || 0,
+        retry_attempts: result.retry_attempts || [],
+        validation_result: result.validation_result,
         opencode_request_log: sidecar?.requestLog || [],
         opencode_stderr_tail: sidecar?.getStderrTail?.(8000) || '',
         opencode_stdout_tail: sidecar?.getStdoutTail?.(8000) || '',
@@ -910,8 +1139,19 @@ function createOpenCodeRuntimeService({ app, configStore }) {
       if (isWatchdogStall(error)) {
         mustRestartAfterTask = true;
       }
-      trackAgentRuntime(app, configStore, 'failed');
+      trackAgentRuntime(app, configStore, runtime.id, 'failed', { retryCount: Array.isArray(error?.agentRetryAttempts) ? error.agentRetryAttempts.length : retryAttempts.length });
       const diagnosticsPayload = collectDiagnostics({ taskId, title, outputFile });
+      if (error && typeof error === 'object') {
+        error.agentRetryAttempts = Array.isArray(error.agentRetryAttempts) ? error.agentRetryAttempts : [...retryAttempts];
+      }
+      diagnosticsPayload.retryAttempts = Array.isArray(error?.agentRetryAttempts) ? error.agentRetryAttempts : [...retryAttempts];
+      diagnosticsPayload.validationFailed = Boolean(error?.agentValidationFailed);
+      try {
+        archivedWorkspaceDir = archiveTaskWorkspace(taskId);
+        moveDiagnosticsToArchivedWorkspace(diagnosticsPayload, archivedWorkspaceDir, outputFile);
+      } catch (archiveError) {
+        diagnosticsPayload.archiveError = archiveError?.message || String(archiveError || '归档失败');
+      }
       writeTaskDiagnostics(taskId, diagnosticsPayload);
       throw annotateAgentError(error, diagnosticsPayload);
     } finally {
@@ -941,6 +1181,99 @@ function createOpenCodeRuntimeService({ app, configStore }) {
       }
       emitStatus();
     }
+  }
+
+  function drainAgentTaskQueue() {
+    if (taskQueueDraining || activeTask || closePromise) {
+      return;
+    }
+    taskQueueDraining = true;
+    void (async () => {
+      try {
+        while (!activeTask && taskQueue.length && !closePromise) {
+          if (restartPending && phase === 'idle') {
+            await restart(restartPendingReason || 'config changed');
+          }
+
+          const entry = taskQueue.shift();
+          if (!entry) {
+            continue;
+          }
+          entry.started = true;
+          entry.cleanup?.();
+          emitStatusThrottled();
+
+          if (entry.payload.signal?.aborted) {
+            entry.reject(createAbortReason(entry.payload.signal));
+            continue;
+          }
+
+          appendRuntimeEvent({
+            source: 'runtime.queue',
+            message: `Agent 排队任务开始执行：${entry.title}`,
+            task_id: entry.taskId,
+            queue_length: taskQueue.length,
+          });
+
+          try {
+            const result = await runTaskNow(entry.payload);
+            entry.resolve(result);
+          } catch (error) {
+            entry.reject(error);
+          }
+        }
+      } finally {
+        taskQueueDraining = false;
+        emitStatusThrottled();
+        if (taskQueue.length && !activeTask && !closePromise) {
+          setTimeout(drainAgentTaskQueue, 0);
+        }
+      }
+    })();
+  }
+
+  async function runTask(payload = {}) {
+    if (phase === 'closing' || closePromise) {
+      throw new Error('Agent 服务正在关闭，无法执行任务');
+    }
+    if (payload.signal?.aborted) {
+      throw createAbortReason(payload.signal);
+    }
+
+    const taskId = payload.task_id || crypto.randomUUID();
+    const title = payload.title || '易标智能体任务';
+    const queuedAt = nowIso();
+    return new Promise((resolve, reject) => {
+      const entry = {
+        taskId,
+        title,
+        queuedAt,
+        payload: { ...payload, task_id: taskId },
+        resolve,
+        reject,
+        started: false,
+        cleanup: null,
+      };
+
+      if (payload.signal?.addEventListener) {
+        const onAbort = () => {
+          removeQueuedTask(entry, createAbortReason(payload.signal));
+        };
+        payload.signal.addEventListener('abort', onAbort, { once: true });
+        entry.cleanup = () => payload.signal.removeEventListener('abort', onAbort);
+      }
+
+      taskQueue.push(entry);
+      appendRuntimeEvent({
+        source: 'runtime.queue',
+        message: `Agent 任务已入队：${title}`,
+        task_id: taskId,
+        queue_length: taskQueue.length,
+      });
+      notifyQueuedTask(entry, taskQueue.length);
+      emitStatusThrottled();
+      drainAgentTaskQueue();
+    });
   }
 
   async function warmup() {
@@ -991,7 +1324,7 @@ function createOpenCodeRuntimeService({ app, configStore }) {
   }
 
   async function runSelfCheck() {
-    if (activeTask) {
+    if (activeTask || taskQueue.length) {
       const busyResult = {
         success: false,
         status: 'busy',
@@ -1006,6 +1339,7 @@ function createOpenCodeRuntimeService({ app, configStore }) {
         output_file: SELF_CHECK_OUTPUT_FILE,
         output_path: path.join(serviceWorkspaceDir, SELF_CHECK_OUTPUT_FILE),
         opencode_binary_path: '',
+        isolation_check: null,
         runtime_status: getStatus(),
         steps: [],
         detail_text: '',
@@ -1017,12 +1351,14 @@ function createOpenCodeRuntimeService({ app, configStore }) {
     const checkedAt = nowIso();
     const startedAt = Date.now();
     const steps = createSelfCheckSteps();
-    const logger = createSelfCheckLogger(app);
+    const logger = createSelfCheckLogger(app, `${runtime.id}-self-check`);
     let opencodeBinaryPath = '';
     let config = null;
     let modelConfig = null;
     let environment = null;
+    let isolationCheck = null;
     let directModelTest = null;
+    let toolCheckResult = null;
     let agentResult = null;
     let workspaceSnapshot = null;
     let agentTaskStarted = false;
@@ -1130,7 +1466,7 @@ function createOpenCodeRuntimeService({ app, configStore }) {
       const outputPath = agentResult?.workspace_dir
         ? path.join(agentResult.workspace_dir, SELF_CHECK_OUTPUT_FILE)
         : error?.agentOutputPath || path.join(serviceWorkspaceDir, SELF_CHECK_OUTPUT_FILE);
-      return {
+      const result = {
         success,
         status,
         message: resultMessage,
@@ -1146,7 +1482,15 @@ function createOpenCodeRuntimeService({ app, configStore }) {
         opencode_binary_path: opencodeBinaryPath,
         model_config: modelConfig,
         environment,
+        isolation_check: isolationCheck || error?.isolationCheck || sidecar?.isolationCheck || null,
         direct_model_test: directModelTest,
+        tool_check_summary: toolCheckResult?.summary || '',
+        tool_check_environment: toolCheckResult ? {
+          runtime_tools_bin_dir: toolCheckResult.runtime_tools_bin_dir || '',
+          bundled_tools_bin_dir: toolCheckResult.bundled_tools_bin_dir || '',
+          path_entries: toolCheckResult.path_entries || [],
+        } : null,
+        tool_checks: toolCheckResult?.items || [],
         opencode_request_log: agentResult?.opencode_request_log || diagnosticsPayload.opencode_request_log || [],
         proxy_diagnostics: { events: diagnostics.events.slice(-200) },
         workspace_snapshot: workspaceSnapshot,
@@ -1161,6 +1505,8 @@ function createOpenCodeRuntimeService({ app, configStore }) {
         error: error ? diagnosticsPayload : undefined,
         detail_text: '',
       };
+      result.sections = createOpenCodeDiagnosticSections(result);
+      return result;
     }
 
     try {
@@ -1195,6 +1541,43 @@ function createOpenCodeRuntimeService({ app, configStore }) {
       fs.rmSync(writeCheckPath, { force: true });
       setStep('runtime-write-check', 'success', '运行目录可写');
 
+      setStep('tool-check', 'running', '正在校验已集成命令工具');
+      toolCheckResult = runIntegratedToolSelfCheck({
+        app,
+        runtimeRoot: serviceRuntimeRoot,
+        workspaceDir: serviceWorkspaceDir,
+        logger,
+      });
+      if (!toolCheckResult.success) {
+        const toolCheckMessage = `集成工具校验失败：${toolCheckResult.summary || '存在不可用的关键工具'}`;
+        setStep('tool-check', 'error', toolCheckMessage);
+        throw createSelfCheckStageError('tool-check', toolCheckMessage);
+      }
+      setStep('tool-check', 'success', toolCheckResult.summary || '集成工具校验通过');
+
+      setStep('ai-proxy-start', 'running', '正在确认常驻 OpenCode AI proxy');
+      const runningSidecar = await ensureStarted();
+      completeRuntimeSteps();
+
+      setStep('isolation-check', 'running', '正在检查 OpenCode 逻辑隔离');
+      isolationCheck = runningSidecar?.isolationCheck || null;
+      if (!isolationCheck?.success) {
+        const violations = Array.isArray(isolationCheck?.violations)
+          ? isolationCheck.violations.filter(Boolean).join('；')
+          : '';
+        const isolationError = createSelfCheckStageError(
+          'isolation-check',
+          violations ? `OpenCode 逻辑隔离检查失败：${violations}` : 'OpenCode 逻辑隔离未返回有效结果'
+        );
+        isolationError.isolationCheck = isolationCheck;
+        throw isolationError;
+      }
+      setStep(
+        'isolation-check',
+        'success',
+        `外部目录规则已拒绝，已加载 ${isolationCheck.loaded_skills?.length || 0} 个 Skill`
+      );
+
       setStep('direct-model-test', 'running', '正在直接请求当前文本模型');
       directModelTest = await runDirectModelSelfCheck(config);
       if (!directModelTest.success) {
@@ -1202,7 +1585,6 @@ function createOpenCodeRuntimeService({ app, configStore }) {
       }
       setStep('direct-model-test', 'success', directModelTest.message || '直接模型测试成功');
 
-      setStep('ai-proxy-start', 'running', '正在确认常驻 OpenCode AI proxy');
       agentTaskStarted = true;
       agentResult = await runTask({
         task_id: SELF_CHECK_TASK_ID,
@@ -1211,6 +1593,7 @@ function createOpenCodeRuntimeService({ app, configStore }) {
         files: [{ path: 'self-check-input.txt', content: 'YIBIAO_AGENT_SELF_CHECK_INPUT' }],
         prompt: buildSelfCheckPrompt(),
         timeout_ms: SELF_CHECK_TIMEOUT_MS,
+        max_retries: 0,
         onActivity: handleInternalActivity,
       });
 
@@ -1271,6 +1654,7 @@ function createOpenCodeRuntimeService({ app, configStore }) {
       if (activeTaskAbortController && !activeTaskAbortController.signal.aborted) {
         activeTaskAbortController.abort(new Error('Agent 服务正在关闭'));
       }
+      rejectQueuedTasks(new Error('Agent 服务正在关闭'));
       if (startPromise) {
         await startPromise.catch(() => undefined);
       }

@@ -78,17 +78,33 @@ const tasks = [
   },
   {
     id: 'techRequirements', label: '技术评分要求', required: true, output: 'markdown', description: '提取技术评分项、权重分值、评分标准和招标文件中的位置。',
-    prompt: () => `任务：提取技术评分要求。
+    prompt: () => `任务：提取技术评分信息，并按语义区分“技术评分项”和“技术评分要求”。
 
 重点识别“技术评分”“评标方法”“评分标准”“技术参数”“技术要求”“技术方案”“技术部分”“评审要素”相关章节，不要提取商务、价格、资质等无关条目。
 
-每一项按以下结构输出：
+分类原则：
+1. 技术评分项：指投标人需要在技术方案中一一响应、展开编写，并可对应形成技术方案章节的具体评分内容，例如方案类、措施类、团队类、实施类、服务类、保障类、运维类、应急类、检查类等评分内容。
+2. 技术评分要求：指用于约束评分、解释评分、定义扣分或判定规则的通用规则或说明，例如符合性要求、偏离扣分规则、判定口径、适用范围说明、表后说明、通用评审规则等。
+3. 判断依据是该内容是否要求投标人在技术方案中展开具体方案内容；如果不是具体方案内容，即使带有分值或扣分规则，也归入技术评分要求。
+4. 若原文存在层级关系，请保持顺序和来源，不要自行合并不相关条款。
+
+输出格式：
+
+## 技术评分项
+
 【评分项名称】：<招标文件描述，保留专业术语>
 【权重/分值】：<具体分值或占比>
 【评分标准】：<详细规则>
 【数据来源】：<章节、条款、页码或表格位置>
 
-若没有明确技术评分表，请根据上下文判断技术评分相关内容。直接返回提取结果。`,
+## 技术评分要求
+
+【评分要求名称】：<要求或规则名称>
+【适用范围】：<适用于哪些评分项或评审环节>
+【要求/判定口径】：<具体要求、解释、扣分或判定规则>
+【数据来源】：<章节、条款、页码或表格位置>
+
+若某一类没有内容，请保留对应标题并写“未提取到”。直接返回提取结果。`,
   },
   { id: 'projectInfo', label: '项目信息', required: true, output: 'json', description: '项目名称、编号、类型、预算和地址。', prompt: () => jsonTask('提取项目信息', '提取项目名称、项目编号、项目类型、项目预算、项目地址。', `{"project_name":"项目名称","project_number":"项目编号","project_type":"项目类型","project_budget":"项目预算","project_address":"项目地址"}`) },
   { id: 'partAInfo', label: '甲方信息', required: true, output: 'json', description: '招标人公司、地址、联系人和电话。', prompt: () => jsonTask('提取甲方信息', '提取公司名称、地址、联系人、联系电话。', `{"company_name":"公司名称","address":"地址","contact_person":"联系人","contact_phone":"联系电话"}`) },
@@ -283,6 +299,10 @@ async function runBidAnalysisTask({ aiService, workspaceStore, updateTask, paylo
     return Math.round((done / selectedTasks.length) * 100);
   }
 
+  function getMissingRequiredTasks(nextTasks) {
+    return tasks.filter((task) => task.required && !(nextTasks[task.id]?.status === 'success' && String(nextTasks[task.id]?.content || '').trim()));
+  }
+
   const initialMessage = requestedTaskIds
     ? '开始重新解析选中的招标文件解析项。'
     : forceRerun
@@ -330,12 +350,16 @@ async function runBidAnalysisTask({ aiService, workspaceStore, updateTask, paylo
       task,
       sectionHint,
     });
+    const trimmedContent = String(content || '').trim();
+    if (!trimmedContent) {
+      throw new Error(`${task.label}解析结果为空，请重新解析`);
+    }
 
     const prev = workspaceStore.loadTechnicalPlan() || {};
-    const nextTasks = { ...(prev.bidAnalysisTasks || {}), [task.id]: { id: task.id, label: task.label, status: 'success', content } };
+    const nextTasks = { ...(prev.bidAnalysisTasks || {}), [task.id]: { id: task.id, label: task.label, status: 'success', content: trimmedContent } };
     const partial = { bidAnalysisTasks: nextTasks, bidAnalysisProgress: doneProgress(nextTasks) };
-    if (task.id === 'projectOverview') partial.projectOverview = content;
-    if (task.id === 'techRequirements') partial.techRequirements = content;
+    if (task.id === 'projectOverview') partial.projectOverview = trimmedContent;
+    if (task.id === 'techRequirements') partial.techRequirements = trimmedContent;
     technicalPlan = workspaceStore.updateTechnicalPlan(partial);
     updateTask({ status: 'running', progress: technicalPlan.bidAnalysisProgress || 0 }, technicalPlan);
   }
@@ -368,8 +392,18 @@ async function runBidAnalysisTask({ aiService, workspaceStore, updateTask, paylo
   }
   await Promise.all(remainingTasks.map(runOneSafely));
 
-  technicalPlan = workspaceStore.updateTechnicalPlan({ bidAnalysisTask: updateTask({ status: 'success', progress: 100, logs: ['招标文件解析完成。'] }) });
-  updateTask({ status: 'success', progress: 100 }, technicalPlan);
+  const latestPlan = workspaceStore.loadTechnicalPlan() || {};
+  const missingRequiredTasks = getMissingRequiredTasks(latestPlan.bidAnalysisTasks || {});
+  if (missingRequiredTasks.length) {
+    const missingLabels = missingRequiredTasks.map((task) => task.label).join('、');
+    const message = `必填解析项未完成：${missingLabels}，请重新解析失败项。`;
+    technicalPlan = workspaceStore.updateTechnicalPlan({ bidAnalysisTask: updateTask({ status: 'error', progress: 100, error: message, logs: [message] }) });
+    updateTask({ status: 'error', progress: 100, error: message }, technicalPlan);
+    return;
+  }
+
+  technicalPlan = workspaceStore.updateTechnicalPlan({ bidAnalysisTask: updateTask({ status: 'success', progress: 100, error: undefined, logs: ['招标文件解析完成。'] }) });
+  updateTask({ status: 'success', progress: 100, error: undefined }, technicalPlan);
 }
 
 module.exports = {

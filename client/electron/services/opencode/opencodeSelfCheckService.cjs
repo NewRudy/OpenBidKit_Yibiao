@@ -1,18 +1,34 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { spawnSync } = require('node:child_process');
 const {
   getAgentCacheDir,
   getAgentRuntimeDir,
   getDeveloperLogsDir,
   getUserDataPath,
 } = require('../../utils/paths.cjs');
+const {
+  BUNDLED_COMMANDS,
+  SHIM_COMMANDS,
+} = require('../agent/agentToolEnvironment.cjs');
+const { prepareOpenCodeEnvironment } = require('./opencodeEnvironment.cjs');
 
 const SELF_CHECK_TASK_ID = 'agent-self-check-latest';
 const SELF_CHECK_OUTPUT_FILE = 'agent-self-check-result.json';
 const SELF_CHECK_EXPECTED_MESSAGE = 'YIBIAO_AGENT_SELF_CHECK_OK';
 const SELF_CHECK_TIMEOUT_MS = 5 * 60 * 1000;
 const SELF_CHECK_DIRECT_MODEL_TIMEOUT_MS = 30 * 1000;
+const TOOL_CHECK_TIMEOUT_MS = 10 * 1000;
+const TOOL_CHECK_CRITICAL_COMMANDS = new Set(['rg', 'fd', 'jq', 'node']);
+const POWERSHELL_ALIAS_PRONE_COMMANDS = new Set(['cat', 'cp', 'ls', 'mkdir', 'mv', 'pwd', 'rm', 'sort']);
+const TOOL_CHECK_INPUT = ['alpha', 'beta', 'alpha', 'gamma'].join('\n');
+
+const TOOL_CHECK_DESCRIPTORS = [
+  ...BUNDLED_COMMANDS.map((command) => ({ command, label: command, type: 'bundled' })),
+  { command: 'node', label: 'node', type: 'shim', testCommand: 'node -e "console.log(process.version)"' },
+  ...SHIM_COMMANDS.map((command) => ({ command, label: command, type: 'shim' })),
+];
 
 function nowIso() {
   return new Date().toISOString();
@@ -21,6 +37,262 @@ function nowIso() {
 function clipText(value, maxLength = 4000) {
   const text = String(value || '');
   return text.length > maxLength ? `${text.slice(0, maxLength)}\n...（已截断，原始长度 ${text.length}）` : text;
+}
+
+function normalizePathForCompare(value) {
+  return String(value || '').replace(/\\/g, '/').toLowerCase();
+}
+
+function getExecutableName(command) {
+  return process.platform === 'win32' ? `${command}.exe` : command;
+}
+
+function getExpectedToolPath(toolEnvironment, descriptor) {
+  if (descriptor.command === 'node') {
+    return path.join(toolEnvironment.runtimeToolsBinDir, process.platform === 'win32' ? 'node.cmd' : 'node');
+  }
+  if (descriptor.type === 'bundled') {
+    return path.join(toolEnvironment.bundledToolsBinDir, getExecutableName(descriptor.command));
+  }
+  return path.join(toolEnvironment.runtimeToolsBinDir, process.platform === 'win32' ? `${descriptor.command}.cmd` : descriptor.command);
+}
+
+function shellCommand(command, cwd, env, timeoutMs = TOOL_CHECK_TIMEOUT_MS) {
+  const startedAt = Date.now();
+  const powershellUtf8Prefix = [
+    '[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    '$OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  ].join('; ');
+  const child = process.platform === 'win32'
+    ? spawnSync('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      `${powershellUtf8Prefix}; ${command}`,
+    ], {
+      cwd,
+      env,
+      encoding: 'utf-8',
+      timeout: timeoutMs,
+      windowsHide: true,
+    })
+    : spawnSync('/bin/sh', ['-c', command], {
+      cwd,
+      env,
+      encoding: 'utf-8',
+      timeout: timeoutMs,
+    });
+  return {
+    exit_code: child.status ?? (child.error ? 1 : 0),
+    signal: child.signal || '',
+    stdout: clipText(child.stdout || '', 1000).trim(),
+    stderr: clipText(child.stderr || '', 1000).trim(),
+    error: child.error?.message || '',
+    timed_out: child.error?.code === 'ETIMEDOUT',
+    duration_ms: Date.now() - startedAt,
+  };
+}
+
+function resolveToolCommand(command, cwd, env) {
+  const escaped = String(command || '').replace(/'/g, "''");
+  const resolveCommand = process.platform === 'win32'
+    ? `$cmd = Get-Command -Name '${escaped}' -ErrorAction SilentlyContinue | Select-Object -First 1; if ($null -eq $cmd) { exit 9 }; $source = [string]$cmd.Source; if (-not $source) { $source = [string]$cmd.Definition }; [Console]::WriteLine(([string]$cmd.CommandType) + '|' + $source)`
+    : `resolved=$(command -v ${command} 2>/dev/null) || exit 9; printf 'Application|%s\n' "$resolved"`;
+  const result = shellCommand(resolveCommand, cwd, env, 5000);
+  if (result.exit_code !== 0) {
+    return {
+      found: false,
+      command_type: '',
+      source: '',
+      message: result.stderr || result.error || `命令解析失败，exit=${result.exit_code}`,
+    };
+  }
+  const [commandType, ...sourceParts] = String(result.stdout || '').split('|');
+  return {
+    found: true,
+    command_type: commandType || '',
+    source: clipText(sourceParts.join('|'), 500),
+    message: '',
+  };
+}
+
+function getToolTestCommand(command) {
+  const windows = process.platform === 'win32';
+  const commands = {
+    basename: 'basename a/b/c.txt',
+    cat: 'cat tool-check-input.txt',
+    cp: 'cp tool-check-input.txt cp-output.txt',
+    cut: 'cut -c 1-3 tool-check-input.txt',
+    dirname: 'dirname a/b/c.txt',
+    du: 'du -s .',
+    fd: 'fd --version',
+    find: 'find . -name tool-check-input.txt',
+    grep: 'grep alpha tool-check-input.txt',
+    head: 'head -n 1 tool-check-input.txt',
+    jq: 'jq --version',
+    ls: 'ls .',
+    mkdir: 'mkdir mkdir-output',
+    mv: 'mv mv-source.txt mv-output.txt',
+    node: 'node -e "console.log(process.version)"',
+    pwd: 'pwd',
+    realpath: 'realpath .',
+    rg: 'rg --version',
+    rm: 'rm rm-source.txt',
+    sed: 'sed s/alpha/ALPHA/ tool-check-input.txt',
+    sort: 'sort tool-check-input.txt',
+    stat: 'stat tool-check-input.txt',
+    tail: 'tail -n 1 tool-check-input.txt',
+    touch: 'touch touch-output.txt',
+    tr: windows ? 'Get-Content -Raw tool-check-input.txt | tr a A' : 'tr a A < tool-check-input.txt',
+    uniq: 'sort tool-check-input.txt | uniq',
+    wc: 'wc -l tool-check-input.txt',
+  };
+  return commands[command] || `${command} --version`;
+}
+
+function prepareToolCheckFixture(checkDir, command) {
+  if (command === 'cp') {
+    fs.rmSync(path.join(checkDir, 'cp-output.txt'), { force: true });
+  }
+  if (command === 'mkdir') {
+    fs.rmSync(path.join(checkDir, 'mkdir-output'), { recursive: true, force: true });
+  }
+  if (command === 'mv') {
+    fs.writeFileSync(path.join(checkDir, 'mv-source.txt'), 'move me\n', 'utf-8');
+    fs.rmSync(path.join(checkDir, 'mv-output.txt'), { force: true });
+  }
+  if (command === 'rm') {
+    fs.writeFileSync(path.join(checkDir, 'rm-source.txt'), 'remove me\n', 'utf-8');
+  }
+  if (command === 'touch') {
+    fs.rmSync(path.join(checkDir, 'touch-output.txt'), { force: true });
+  }
+}
+
+function buildToolCheckStatus({ descriptor, expectedPath, resolution, smoke }) {
+  const expectedExists = fs.existsSync(expectedPath);
+  const resolvedSource = normalizePathForCompare(resolution.source);
+  const expectedSource = normalizePathForCompare(expectedPath);
+  const resolvedToExpected = Boolean(resolvedSource && expectedSource && resolvedSource === expectedSource);
+  const isPowerShellAlias = process.platform === 'win32' && ['Alias', 'Cmdlet', 'Function'].includes(resolution.command_type);
+  const critical = TOOL_CHECK_CRITICAL_COMMANDS.has(descriptor.command);
+
+  if (!expectedExists) {
+    return { status: critical ? 'error' : 'warning', message: `期望文件不存在：${expectedPath}` };
+  }
+  if (!resolution.found) {
+    return { status: critical ? 'error' : 'warning', message: resolution.message || '命令无法在 PATH 中解析' };
+  }
+  if (smoke.exit_code !== 0 || smoke.timed_out) {
+    return {
+      status: critical ? 'error' : 'warning',
+      message: smoke.timed_out ? '执行超时' : smoke.stderr || smoke.error || `执行失败，exit=${smoke.exit_code}`,
+    };
+  }
+  if (!resolvedToExpected) {
+    if (POWERSHELL_ALIAS_PRONE_COMMANDS.has(descriptor.command) && isPowerShellAlias) {
+      return { status: 'warning', message: `命令可执行，但当前由 PowerShell ${resolution.command_type} 处理` };
+    }
+    if (critical) {
+      return { status: 'error', message: `命令未解析到易标集成路径：${resolution.source}` };
+    }
+    return { status: 'warning', message: `命令可执行，但未解析到易标集成路径：${resolution.source}` };
+  }
+  return { status: 'success', message: '可用' };
+}
+
+function summarizeToolChecks(items) {
+  const total = items.length;
+  const successCount = items.filter((item) => item.status === 'success').length;
+  const warningCount = items.filter((item) => item.status === 'warning').length;
+  const errorCount = items.filter((item) => item.status === 'error').length;
+  const parts = [`${successCount}/${total} 可用`];
+  if (warningCount) parts.push(`${warningCount} 个警告`);
+  if (errorCount) parts.push(`${errorCount} 个失败`);
+  return parts.join('，');
+}
+
+function runIntegratedToolSelfCheck({ app, runtimeRoot, workspaceDir, logger } = {}) {
+  const checkDir = path.join(workspaceDir, `.agent-tool-check-${Date.now()}`);
+  let toolEnvironment = null;
+
+  try {
+    fs.mkdirSync(checkDir, { recursive: true });
+    fs.writeFileSync(path.join(checkDir, 'tool-check-input.txt'), `${TOOL_CHECK_INPUT}\n`, 'utf-8');
+
+    const environmentInfo = prepareOpenCodeEnvironment({ app, runtimeRoot, workspaceDir });
+    toolEnvironment = environmentInfo.toolEnvironment;
+    const env = environmentInfo.env;
+
+    const items = TOOL_CHECK_DESCRIPTORS.map((descriptor) => {
+      const expectedPath = getExpectedToolPath(toolEnvironment, descriptor);
+      prepareToolCheckFixture(checkDir, descriptor.command);
+      const resolution = resolveToolCommand(descriptor.command, checkDir, env);
+      const smoke = resolution.found
+        ? shellCommand(descriptor.testCommand || getToolTestCommand(descriptor.command), checkDir, env)
+        : { exit_code: 1, stdout: '', stderr: '', error: resolution.message || '命令未解析', timed_out: false, duration_ms: 0 };
+      const status = buildToolCheckStatus({ descriptor, expectedPath, resolution, smoke });
+      const item = {
+        id: descriptor.command,
+        label: descriptor.label,
+        command: descriptor.command,
+        type: descriptor.type,
+        critical: TOOL_CHECK_CRITICAL_COMMANDS.has(descriptor.command),
+        status: status.status,
+        message: status.message,
+        expected_path: expectedPath,
+        resolved_type: resolution.command_type,
+        resolved_source: resolution.source,
+        exit_code: smoke.exit_code,
+        duration_ms: smoke.duration_ms,
+        stdout: smoke.stdout,
+        stderr: smoke.stderr || smoke.error,
+      };
+      logger?.write?.('tool-check', item);
+      return item;
+    });
+
+    const summary = summarizeToolChecks(items);
+    return {
+      success: !items.some((item) => item.status === 'error'),
+      summary,
+      runtime_tools_bin_dir: toolEnvironment.runtimeToolsBinDir,
+      bundled_tools_bin_dir: toolEnvironment.bundledToolsBinDir,
+      path_entries: toolEnvironment.pathEntries,
+      items,
+    };
+  } catch (error) {
+    const message = error?.message || String(error || '集成工具校验失败');
+    logger?.write?.('tool-check-error', { message });
+    return {
+      success: false,
+      summary: message,
+      runtime_tools_bin_dir: toolEnvironment?.runtimeToolsBinDir || '',
+      bundled_tools_bin_dir: toolEnvironment?.bundledToolsBinDir || '',
+      path_entries: toolEnvironment?.pathEntries || [],
+      items: TOOL_CHECK_DESCRIPTORS.map((descriptor) => ({
+        id: descriptor.command,
+        label: descriptor.label,
+        command: descriptor.command,
+        type: descriptor.type,
+        critical: TOOL_CHECK_CRITICAL_COMMANDS.has(descriptor.command),
+        status: TOOL_CHECK_CRITICAL_COMMANDS.has(descriptor.command) ? 'error' : 'warning',
+        message,
+        expected_path: '',
+        resolved_type: '',
+        resolved_source: '',
+        exit_code: 1,
+        duration_ms: 0,
+        stdout: '',
+        stderr: message,
+      })),
+    };
+  } finally {
+    try { fs.rmSync(checkDir, { recursive: true, force: true }); } catch {}
+  }
 }
 
 function trimBaseUrl(baseUrl) {
@@ -53,6 +325,74 @@ function summarizeTextModelConfig(config = {}) {
     context_length_limit: Number(config.context_length_limit || 0),
     concurrency_limit: Number(config.concurrency_limit || 0),
   };
+}
+
+function normalizeDiagnosticDetails(value) {
+  return Object.entries(value || {})
+    .filter(([, item]) => item !== undefined && item !== null && item !== '' && typeof item !== 'object')
+    .map(([label, item]) => ({ label, value: String(item) }));
+}
+
+// 将 OpenCode 专属检查结果转换为公共诊断区。
+function createOpenCodeDiagnosticSections(result = {}) {
+  const sections = [];
+  const isolation = result.isolation_check;
+  if (isolation) {
+    sections.push({
+      id: 'runtime-environment',
+      title: 'OpenCode 运行环境',
+      status: isolation.success ? 'success' : 'error',
+      summary: isolation.success ? '运行路径、权限和 Skill 来源符合配置' : '运行环境检查失败',
+      details: [
+        { label: 'Agent 工作区', value: isolation.workspace_dir || '-' },
+        { label: '隔离 HOME', value: isolation.home_dir || '-' },
+        { label: '外部目录规则', value: isolation.external_read_denied ? '已拒绝' : '未通过' },
+        { label: '已加载 Skill', value: String(isolation.loaded_skills?.length || 0) },
+      ],
+      items: [
+        ...(isolation.loaded_skills || []).map((skill, index) => ({
+          id: `skill-${index}`,
+          label: skill.name || '未命名 Skill',
+          status: 'success',
+          detail: skill.location || '<built-in>',
+        })),
+        ...(isolation.violations || []).map((message, index) => ({
+          id: `violation-${index}`,
+          label: '配置异常',
+          status: 'error',
+          message,
+        })),
+      ],
+    });
+  }
+  if (Array.isArray(result.tool_checks) && result.tool_checks.length) {
+    const toolStatus = result.tool_checks.some((item) => item.status === 'error')
+      ? 'error'
+      : result.tool_checks.some((item) => item.status === 'warning') ? 'warning' : 'success';
+    sections.push({
+      id: 'tools',
+      title: '已集成工具',
+      status: toolStatus,
+      summary: result.tool_check_summary || '工具检查完成',
+      items: result.tool_checks.map((item) => ({
+        id: item.id,
+        label: item.label || item.command,
+        status: item.status,
+        message: item.message,
+        detail: item.resolved_source || item.expected_path || '',
+      })),
+    });
+  }
+  if (result.direct_model_test) {
+    sections.push({
+      id: 'model',
+      title: '当前文本模型',
+      status: result.direct_model_test.success ? 'success' : 'error',
+      summary: result.direct_model_test.message || '',
+      details: normalizeDiagnosticDetails(result.model_config),
+    });
+  }
+  return sections;
 }
 
 function createTimeoutSignal(timeoutMs, message) {
@@ -266,7 +606,7 @@ function createSelfCheckConclusion(result) {
   const lastProxySuccess = findLastProxyEvent(proxyEvents, 'proxy.upstream.completed');
   const lastHeaders = findLastProxyEvent(proxyEvents, 'proxy.upstream.headers');
 
-  if (result.success) return '结论：智能体自检通过，OpenCode Server、AI proxy、上游模型和文件输出链路均正常。';
+  if (result.success) return '结论：智能体自检通过，OpenCode 逻辑隔离、Server、AI proxy、上游模型和文件输出链路均正常。';
   if (failedStep?.id === 'binary-check') return '结论：OpenCode 程序文件缺失或不可访问，属于安装包资源问题。';
   if (failedStep?.id === 'runtime-write-check') return '结论：自检运行目录无法写入，属于本机用户目录权限或磁盘问题。';
   if (failedStep?.id === 'direct-model-test' || direct?.success === false) {
@@ -275,6 +615,12 @@ function createSelfCheckConclusion(result) {
   }
   if (['ai-proxy-start', 'opencode-server-start', 'opencode-health'].includes(failedStep?.id)) {
     return `结论：${failedStep.label}失败，问题位于本机 OpenCode/AI proxy 常驻链路。`;
+  }
+  if (failedStep?.id === 'tool-check') {
+    return '结论：智能体集成命令工具存在不可用项，优先检查 OpenCode 工具目录、PATH 注入和 node shim。';
+  }
+  if (failedStep?.id === 'isolation-check') {
+    return '结论：OpenCode 逻辑隔离验证失败，Agent 任务已停止；请根据越界路径检查运行目录和外部配置来源。';
   }
   if (requestLog.some((item) => item.route === '/session' && item.ok === true) && failedStep?.id === 'message-wait') {
     if (!hasProxyEvent(proxyEvents, 'proxy.chat.received')) {
@@ -311,11 +657,13 @@ function createSelfCheckSteps() {
     { id: 'environment-snapshot', label: '采集环境快照', status: 'pending', message: '' },
     { id: 'binary-check', label: '检查 OpenCode 程序文件', status: 'pending', message: '' },
     { id: 'runtime-write-check', label: '检查运行目录写入能力', status: 'pending', message: '' },
-    { id: 'direct-model-test', label: '直接测试文本模型', status: 'pending', message: '' },
+    { id: 'tool-check', label: '校验已集成命令工具', status: 'pending', message: '' },
     { id: 'ai-proxy-start', label: '确认常驻 OpenCode AI proxy', status: 'pending', message: '' },
     { id: 'opencode-config-write', label: '确认 OpenCode 常驻配置', status: 'pending', message: '' },
     { id: 'opencode-server-start', label: '确认常驻 OpenCode Server', status: 'pending', message: '' },
     { id: 'opencode-health', label: '检查 OpenCode Server 健康状态', status: 'pending', message: '' },
+    { id: 'isolation-check', label: '检查 OpenCode 逻辑隔离', status: 'pending', message: '' },
+    { id: 'direct-model-test', label: '直接测试文本模型', status: 'pending', message: '' },
     { id: 'session-create', label: '创建 OpenCode Session', status: 'pending', message: '' },
     { id: 'message-wait', label: '执行极简智能体任务', status: 'pending', message: '' },
     { id: 'diff-fetch', label: '读取 OpenCode Diff', status: 'pending', message: '' },
@@ -336,8 +684,8 @@ function getCurrentSelfCheckStage(steps) {
   return steps.find((step) => step.status === 'running')?.id || 'agent-run';
 }
 
-function createSelfCheckLogger(app) {
-  const logDir = getDeveloperLogsDir(app, 'agent-self-check');
+function createSelfCheckLogger(app, moduleName) {
+  const logDir = getDeveloperLogsDir(app, moduleName);
   const logFile = path.join(logDir, 'latest.jsonl');
   let setupError = '';
 
@@ -391,6 +739,7 @@ function compactSelfCheckError(error) {
     opencode_stdout_tail: clipText(error?.openCodeStdoutTail || '', 4000),
     opencode_stderr_tail: clipText(error?.openCodeStderrTail || '', 4000),
     opencode_request_log: Array.isArray(error?.openCodeRequestLog) ? error.openCodeRequestLog : [],
+    isolation_check: error?.isolationCheck || null,
   };
 }
 
@@ -459,6 +808,20 @@ function formatSelfCheckDetails(result) {
     lines.push('');
     lines.push('直接模型测试：');
     lines.push(JSON.stringify(result.direct_model_test, null, 2));
+  }
+
+  if (result.isolation_check) {
+    lines.push('');
+    lines.push('OpenCode 逻辑隔离：');
+    lines.push(JSON.stringify(result.isolation_check, null, 2));
+  }
+
+  if (Array.isArray(result.tool_checks) && result.tool_checks.length) {
+    lines.push('');
+    lines.push(`集成工具校验：${result.tool_check_summary || summarizeToolChecks(result.tool_checks)}`);
+    result.tool_checks.forEach((item) => {
+      lines.push(`- ${item.label || item.command}：${item.status}，${item.message || '-'}${item.resolved_source ? `，解析=${item.resolved_source}` : ''}`);
+    });
   }
 
   if (result.runtime_status) {
@@ -602,8 +965,20 @@ function buildSelfCheckReportMarkdown(input = {}) {
   }
 
   lines.push('', '## 环境快照', '', markdownFence(result.environment || {}, 'json'));
+  lines.push('', '## OpenCode 逻辑隔离', '', markdownFence(result.isolation_check || {}, 'json'));
   lines.push('', '## 模型配置摘要', '', markdownFence(result.model_config || {}, 'json'));
   lines.push('', '## 直接模型测试', '', markdownFence(result.direct_model_test || {}, 'json'));
+  lines.push('', '## 集成工具校验', '');
+  if (Array.isArray(result.tool_checks) && result.tool_checks.length) {
+    lines.push(`摘要：${markdownValue(result.tool_check_summary || summarizeToolChecks(result.tool_checks))}`, '');
+    lines.push('| 工具 | 类型 | 状态 | 信息 | 解析来源 | 期望路径 |');
+    lines.push('| --- | --- | --- | --- | --- | --- |');
+    result.tool_checks.forEach((item) => {
+      lines.push(`| ${markdownValue(item.label || item.command).replace(/\|/g, '\\|')} | ${markdownValue(item.type).replace(/\|/g, '\\|')} | ${markdownValue(item.status).replace(/\|/g, '\\|')} | ${markdownValue(item.message).replace(/\|/g, '\\|')} | ${markdownValue(item.resolved_source).replace(/\|/g, '\\|')} | ${markdownValue(item.expected_path).replace(/\|/g, '\\|')} |`);
+    });
+  } else {
+    lines.push('无工具校验结果。');
+  }
   lines.push('', '## Runtime 状态', '', markdownFence(result.runtime_status || {}, 'json'));
   lines.push('', '## AI Proxy 事件', '', markdownFence(result.proxy_diagnostics?.events || [], 'json'));
   lines.push('', '## Workspace 文件快照', '', markdownFence(result.workspace_snapshot || {}, 'json'));
@@ -625,6 +1000,7 @@ module.exports = {
   buildSelfCheckPrompt,
   buildSelfCheckReportMarkdown,
   compactSelfCheckError,
+  createOpenCodeDiagnosticSections,
   createEnvironmentSnapshot,
   createSelfCheckConclusion,
   createSelfCheckLogger,
@@ -632,6 +1008,7 @@ module.exports = {
   formatSelfCheckDetails,
   formatTimestampForFilename,
   getCurrentSelfCheckStage,
+  runIntegratedToolSelfCheck,
   runDirectModelSelfCheck,
   sanitizeReportFilename,
   safeStat,

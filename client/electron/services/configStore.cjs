@@ -2,23 +2,34 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { getConfigFilePath } = require('../utils/paths.cjs');
+const {
+  getDefaultAgentRuntimeId,
+  normalizeAgentRuntimeId,
+} = require('./agent/agentRuntimeRegistry.cjs');
 
-const textModelProviders = ['jinlong', 'volcengine', 'deepseek', 'longcat', 'agnes', 'custom'];
+const textModelProviders = ['jinlong', 'volcengine', 'deepseek', 'agnes', 'custom'];
+const legacyTextModelProviders = ['longcat'];
 const imageModelProviders = ['jinlong', 'volcengine', 'google-ai-studio', 'agnes', 'custom'];
 const aiRequestModes = ['normal', 'stream'];
 const updateChannels = ['github', 'cloudflare'];
 const DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT = 400000;
 const DEFAULT_TEXT_CONCURRENCY_LIMIT = 10;
 const DEFAULT_IMAGE_CONCURRENCY_LIMIT = 2;
+const DEFAULT_COMPONENT_CONCURRENCY_LIMIT = 5;
+const MIN_COMPONENT_CONCURRENCY_LIMIT = 1;
+const MAX_COMPONENT_CONCURRENCY_LIMIT = 20;
 const DEFAULT_HEADING_BORDER_CELL_COLORS = ['#eef5ff', '#f3f7ff', '#f8fbff', '#fbfdff', '#ffffff', '#ffffff'];
 const openAICompatibleImageSizes = ['auto', '1024x1024', '1536x1024', '1024x1536', '2048x2048', '2048x1152', '3840x2160', '2160x3840'];
 const googleImageSizes = ['512', '1K', '2K', '4K'];
+
+const defaultAgentModeScenarios = {
+  existing_plan_expansion_original_outline_extraction: true,
+};
 
 const textProviderBaseUrls = {
   jinlong: 'https://jlaudeapi.com/v1',
   volcengine: 'https://ark.cn-beijing.volces.com/api/v3',
   deepseek: 'https://api.deepseek.com',
-  longcat: 'https://api.longcat.chat/openai/v1',
   agnes: 'https://apihub.agnes-ai.com/v1',
   custom: '',
 };
@@ -48,14 +59,6 @@ const defaultTextModelProfiles = {
     concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT,
     request_mode: 'stream',
   },
-  longcat: {
-    api_key: '',
-    base_url: textProviderBaseUrls.longcat,
-    model_name: '',
-    context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
-    concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT,
-    request_mode: 'stream',
-  },
   agnes: {
     api_key: '',
     base_url: textProviderBaseUrls.agnes,
@@ -74,14 +77,25 @@ const defaultTextModelProfiles = {
   },
 };
 
+const legacyTextModelProfiles = {
+  longcat: {
+    api_key: '',
+    base_url: 'https://api.longcat.chat/openai/v1',
+    model_name: '',
+    context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
+    concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT,
+    request_mode: 'stream',
+  },
+};
+
 const defaultImageModelProfiles = {
   jinlong: {
     provider: 'jinlong',
     base_url: 'https://img-api.jlaudeapi.com/v1',
     api_key: '',
-    model_name: '',
+    model_name: 'gpt-image-2',
     image_size: '1024x1024',
-    request_mode: 'stream',
+    request_mode: 'normal',
     concurrency_limit: DEFAULT_IMAGE_CONCURRENCY_LIMIT,
     status: 'untested',
     tested_at: '',
@@ -225,14 +239,20 @@ const defaultConfig = {
     ...defaultImageModelProfiles.jinlong,
   },
   image_model_profiles: defaultImageModelProfiles,
-  file_parser: {
-    provider: 'local',
-    mineru_token: '',
+  components: {
+    file_parser: {
+      provider: 'local',
+      mineru_token: '',
+    },
+    mermaid_concurrency_limit: DEFAULT_COMPONENT_CONCURRENCY_LIMIT,
+    html_concurrency_limit: DEFAULT_COMPONENT_CONCURRENCY_LIMIT,
   },
   update_channel: 'github',
   gpu_hardware_acceleration_enabled: true,
   gpu_hardware_acceleration_configured: true,
   export_format: defaultExportFormat,
+  agent_runtime: getDefaultAgentRuntimeId(),
+  agent_mode_scenarios: defaultAgentModeScenarios,
   developer_mode: false,
   developer_token_stats_auto_open: false,
   analytics_client_id: '',
@@ -256,6 +276,10 @@ function createAnalyticsCreatedAt() {
 
 function isTextModelProvider(value) {
   return textModelProviders.includes(value);
+}
+
+function isLegacyTextModelProvider(value) {
+  return legacyTextModelProviders.includes(value);
 }
 
 function isImageModelProvider(value) {
@@ -285,8 +309,37 @@ function normalizeImageConcurrencyLimit(value, fallback = DEFAULT_IMAGE_CONCURRE
   return Number.isFinite(number) && number > 0 ? Math.round(number) : fallback;
 }
 
+// 归一化组件转换并发量，限制在 1-20。
+function normalizeComponentConcurrencyLimit(value, fallback = DEFAULT_COMPONENT_CONCURRENCY_LIMIT) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(MAX_COMPONENT_CONCURRENCY_LIMIT, Math.max(MIN_COMPONENT_CONCURRENCY_LIMIT, Math.round(number)));
+}
+
+// 归一化组件设置（文件解析 + Mermaid/HTML 转换并发）。
+function normalizeComponentsConfig(source) {
+  const components = source && typeof source === 'object' ? source : {};
+  const fileParser = components.file_parser && typeof components.file_parser === 'object'
+    ? components.file_parser
+    : {};
+  return {
+    file_parser: {
+      provider: fileParser.provider || defaultConfig.components.file_parser.provider,
+      mineru_token: fileParser.mineru_token || defaultConfig.components.file_parser.mineru_token,
+    },
+    mermaid_concurrency_limit: normalizeComponentConcurrencyLimit(
+      components.mermaid_concurrency_limit,
+      defaultConfig.components.mermaid_concurrency_limit,
+    ),
+    html_concurrency_limit: normalizeComponentConcurrencyLimit(
+      components.html_concurrency_limit,
+      defaultConfig.components.html_concurrency_limit,
+    ),
+  };
+}
+
 function normalizeTextModelProfile(provider, profile) {
-  const defaults = defaultTextModelProfiles[provider];
+  const defaults = defaultTextModelProfiles[provider] || legacyTextModelProfiles[provider];
   const source = profile || {};
   const sourceBaseUrl = provider === 'custom'
     ? source.base_url !== undefined ? source.base_url : defaults.base_url
@@ -308,6 +361,11 @@ function normalizeTextModelProfiles(sourceProfiles) {
       provider,
       sourceProfiles && typeof sourceProfiles === 'object' ? sourceProfiles[provider] : null,
     );
+  });
+  legacyTextModelProviders.forEach((provider) => {
+    if (sourceProfiles && typeof sourceProfiles === 'object' && sourceProfiles[provider]) {
+      profiles[provider] = normalizeTextModelProfile(provider, sourceProfiles[provider]);
+    }
   });
   return profiles;
 }
@@ -379,19 +437,20 @@ function normalizeImageSize(provider, value, fallback) {
 function normalizeImageModelProfile(provider, profile) {
   const defaults = defaultImageModelProfiles[provider];
   const source = profile || {};
+  const useProviderDefaultImageModel = provider === 'jinlong' && !String(source.model_name ?? '').trim();
   return {
     provider,
     base_url: provider === 'custom'
       ? source.base_url !== undefined ? source.base_url : defaults.base_url
       : defaults.base_url,
     api_key: source.api_key !== undefined ? source.api_key : defaults.api_key,
-    model_name: source.model_name !== undefined ? source.model_name : defaults.model_name,
-    image_size: normalizeImageSize(provider, source.image_size, defaults.image_size),
-    request_mode: normalizeAiRequestMode(source.request_mode, defaults.request_mode),
+    model_name: useProviderDefaultImageModel ? defaults.model_name : source.model_name !== undefined ? source.model_name : defaults.model_name,
+    image_size: normalizeImageSize(provider, useProviderDefaultImageModel ? defaults.image_size : source.image_size, defaults.image_size),
+    request_mode: normalizeAiRequestMode(useProviderDefaultImageModel ? defaults.request_mode : source.request_mode, defaults.request_mode),
     concurrency_limit: normalizeImageConcurrencyLimit(source.concurrency_limit, defaults.concurrency_limit),
-    status: source.status !== undefined ? source.status : defaults.status,
-    tested_at: source.tested_at !== undefined ? source.tested_at : defaults.tested_at,
-    last_error: source.last_error !== undefined ? source.last_error : defaults.last_error,
+    status: useProviderDefaultImageModel ? defaults.status : source.status !== undefined ? source.status : defaults.status,
+    tested_at: useProviderDefaultImageModel ? defaults.tested_at : source.tested_at !== undefined ? source.tested_at : defaults.tested_at,
+    last_error: useProviderDefaultImageModel ? defaults.last_error : source.last_error !== undefined ? source.last_error : defaults.last_error,
   };
 }
 
@@ -404,6 +463,15 @@ function normalizeImageModelProfiles(sourceProfiles) {
     );
   });
   return profiles;
+}
+
+function normalizeAgentModeScenarios(source) {
+  const scenarios = source && typeof source === 'object' ? source : {};
+  return {
+    existing_plan_expansion_original_outline_extraction: scenarios.existing_plan_expansion_original_outline_extraction === undefined
+      ? defaultAgentModeScenarios.existing_plan_expansion_original_outline_extraction
+      : Boolean(scenarios.existing_plan_expansion_original_outline_extraction),
+  };
 }
 
 const VALID_NUMBERING_FORMATS = ['outline-decimal', 'custom'];
@@ -561,16 +629,18 @@ function normalizeExportFormat(source) {
 
 function normalizeConfig(config) {
   const source = config || {};
-  const fileParser = source.file_parser ? source.file_parser : {};
   const hasTextProvider = Object.prototype.hasOwnProperty.call(source, 'text_model_provider');
   const rawTextProvider = typeof source.text_model_provider === 'string' ? source.text_model_provider : '';
-  const sourceTextProvider = isTextModelProvider(rawTextProvider)
+  const sourceTextProvider = isTextModelProvider(rawTextProvider) || isLegacyTextModelProvider(rawTextProvider)
     ? rawTextProvider
     : '';
   const textModelProvider = sourceTextProvider || (hasTextProvider || config ? 'custom' : defaultConfig.text_model_provider);
   const textModelProfiles = normalizeTextModelProfiles(source.text_model_profiles);
   if (sourceTextProvider) {
-    textModelProfiles[textModelProvider] = textProfileFromFlatConfig(source, textModelProfiles[textModelProvider], textModelProvider);
+    const fallbackProfile = textModelProfiles[textModelProvider]
+      || defaultTextModelProfiles[textModelProvider]
+      || legacyTextModelProfiles[textModelProvider];
+    textModelProfiles[textModelProvider] = textProfileFromFlatConfig(source, fallbackProfile, textModelProvider);
   } else if (textModelProvider === 'custom' && !hasTextModelProfileData(textModelProfiles.custom)) {
     textModelProfiles.custom = textProfileFromUnknownProvider(source, rawTextProvider, textModelProfiles.custom);
   }
@@ -601,14 +671,13 @@ function normalizeConfig(config) {
     request_mode: activeTextProfile.request_mode,
     image_model: activeImageProfile,
     image_model_profiles: imageModelProfiles,
-    file_parser: {
-      provider: fileParser.provider || defaultConfig.file_parser.provider,
-      mineru_token: fileParser.mineru_token || defaultConfig.file_parser.mineru_token,
-    },
+    components: normalizeComponentsConfig(source.components),
     update_channel: normalizeUpdateChannel(source.update_channel),
     gpu_hardware_acceleration_enabled: gpuHardwareAccelerationEnabled,
     gpu_hardware_acceleration_configured: gpuHardwareAccelerationConfigured === false ? true : gpuHardwareAccelerationConfigured,
     export_format: normalizeExportFormat(source.export_format),
+    agent_runtime: normalizeAgentRuntimeId(source.agent_runtime),
+    agent_mode_scenarios: normalizeAgentModeScenarios(source.agent_mode_scenarios),
     developer_mode: source.developer_mode === undefined ? defaultConfig.developer_mode : Boolean(source.developer_mode),
     developer_token_stats_auto_open: source.developer_token_stats_auto_open === undefined ? defaultConfig.developer_token_stats_auto_open : Boolean(source.developer_token_stats_auto_open),
     analytics_client_id: source.analytics_client_id || defaultConfig.analytics_client_id,
@@ -687,6 +756,10 @@ function createConfigStore(app) {
           image_model_profiles: {
             ...currentConfig.image_model_profiles,
             ...(config && config.image_model_profiles ? config.image_model_profiles : {}),
+          },
+          agent_mode_scenarios: {
+            ...currentConfig.agent_mode_scenarios,
+            ...(config && config.agent_mode_scenarios ? config.agent_mode_scenarios : {}),
           },
           analytics_client_id: config?.analytics_client_id || currentConfig.analytics_client_id,
           analytics_created_at: config?.analytics_created_at || currentConfig.analytics_created_at,

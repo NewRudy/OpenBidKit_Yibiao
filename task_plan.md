@@ -1,5 +1,282 @@
 # Task Plan
 
+## Current Task: Agent 全文图片编排重构
+
+### Goal
+彻底移除正文起始编排中的 AI/Mermaid 图片规划和旧实际配图路径；在正文、扩写、审计和表格清理全部完成后，新增 Agent 全文图片编排阶段，读取全文 Markdown、真实目录树和图片配置，输出最小候选结果，由程序按 HTML > Mermaid > AI、类型上限和节点冲突生成文档级最终图片计划。本轮不实现任何实际图片生成。
+
+### Phases
+- [completed] 1. 新增图片计划类型、SQLite v17 字段和 Store 生命周期。
+- [completed] 2. 新增 Agent 图片编排服务、输入投影、输出校验和后处理算法。
+- [completed] 3. 重构正文编排并完整删除旧图片规划、Mermaid 校验修复、图片生成和插图代码。
+- [completed] 4. 接入 `illustration-planning` 阶段、任务恢复、Renderer 状态和进度展示。
+- [completed] 5. 同步开发说明、提示词文档和 SQL 权威结构。
+- [completed] 6. 运行语法、算法、SQLite migration、客户端构建和任务 smoke 验证。
+
+### Decisions
+- 不读取、不迁移、不兼容旧图片计划、旧 `illustration_type` 或执行一半的数据。
+- （已被“全文配图标题统一编排”v3 方案取代）当时的新 Agent 输出只包含 `kind/image_type/section_ids/placement/priority`，不输出标题、理由、prompt、Mermaid 代码或 HTML。
+- HTML 多节组必须属于同一直接父目录，并且在该父目录下顺序连续；一组计一张图片并占用组内全部小节。
+- 程序按 priority 降序处理，跨类型固定 HTML > Mermaid > AI；同优先级按目录位置和 Agent 输出顺序稳定处理。
+- 新编排成功后正文任务直接结束，不调用任何旧图片生成逻辑。
+- Agent 失败或暂停时不保存半成品，也不执行降级或旧配图 fallback。
+
+### Errors Encountered
+| Error | Attempt | Resolution |
+| --- | --- | --- |
+| 普通 Node.js 无法加载为 Electron 41 编译的 `better-sqlite3`（ABI 137/145 不匹配） | SQLite v17 migration smoke | 不重编译依赖，改用仓库内 Electron runtime 执行同一迁移 smoke，验证通过。 |
+
+### Validation
+- 5 个相关 CJS 文件 `node --check` 通过。
+- 图片编排算法 smoke 通过：根级 HTML 连续多节组可用，HTML 优先占用会剔除冲突 Mermaid/AI，候选和保留计数正确，多余字段被拒绝。
+- Electron runtime SQLite smoke 通过：模拟 v16 旧库升级到 v17 后，`technical_plan_content_plans` 仅保留 `node_id/plan_json/updated_at`。
+- Store 生命周期 smoke 通过：计划可落盘读取，修改配置、手工正文和目录排序都会清空旧计划。
+- 正文任务 smoke 通过：有效 Agent 输出按冲突规则原子保存且实际生图调用为 0；非法输出使任务失败且不保存半成品。
+- `cd client; npm run build` 通过，仅有既有 chunk 体积警告。
+- 浏览器 1440x900 和 390x844 验证通过：图片编排显示 2/3 步、候选/保留统计，移动端无横向溢出。
+
+## Current Task: 正文生成配置弹窗改版
+
+### Goal
+改版正文生成配置弹窗：AI 生图上限按开关条件显示；Mermaid 增加默认 10 张的生图上限并接入与 AI 生图一致的全文择优控制；新增默认开启的 HTML 生图 UI、默认 10 张上限和图片类型高级设置，但暂不实现 HTML 生成业务；删除配置弹窗全部二级说明文字。
+
+### Phases
+- [completed] 1. 扩展正文生成配置类型、默认值、归一化和保存传递链路。
+- [completed] 2. 改造主配置弹窗及 HTML 图片类型高级设置弹窗。
+- [completed] 3. 实现 Mermaid 生图上限的 Main 侧扣减、编排和全局择优控制。
+- [completed] 4. 同步样式和提示词文档。
+- [completed] 5. 运行 CJS 语法检查、客户端构建和交互验证。
+
+### Decisions
+- HTML 生图默认开启，但本轮只保存 `useHtmlImages/maxHtmlImages/htmlImageTypes`，不进入正文编排、配图、统计或导出业务。
+- Mermaid 和 HTML 生图上限默认 10；UI 与 Main 按现有 AI 逻辑限制为 0 到当前叶子小节数。
+- Mermaid 候选继续在 AI 生图候选之后选择，同章 AI 图优先；剩余 Mermaid 候选按章节分布和优先级择优。
+- 删除主配置弹窗的顶部标签、顶部说明、配置项灰色说明和 Mermaid 黄色说明。
+- HTML 高级设置使用独立 Radix Dialog，确认后写回主弹窗草稿，主弹窗保存后持久化。
+
+### Errors Encountered
+| Error | Attempt | Resolution |
+| --- | --- | --- |
+| Vite `5173` 端口已被占用 | 启动独立 Renderer 验证服务 | 未终止现有进程，直接复用已运行的同项目 Vite 服务。 |
+| 首次浏览器 IPC mock 的事件 API 返回 Promise，Provider 清理时报 `unsubscribe is not a function` | 注入最小 Renderer 验证状态 | 为数据库、AI、Agent、任务和导出事件补充同步 unsubscribe stub，重新加载后页面和弹窗正常。 |
+
+### Validation
+- `node --check electron\services\contentGenerationTask.cjs` 通过。
+- `cd client; npm run build` 通过，仅有既有 chunk 体积警告。
+- 浏览器注入最小本地 IPC 状态验证通过：默认 Mermaid/HTML 上限均为 10，HTML 默认开启；三个开关关闭后对应上限和高级设置立即隐藏。
+- HTML 高级设置默认类型、取消回滚、确认写回、保存配置后重新打开持久化均通过。
+- 1440px 双列布局和 640px 单列内部滚动通过，无横向溢出；第二层 Dialog 在 640px 下保持 20px 边距。
+- `git diff --check` 通过，仅有 Windows LF/CRLF 换行提示。
+
+## Current Task: Mermaid 图表类型收敛
+
+### Goal
+将 Mermaid 图片功能严格收敛为流程图、层级图、职责关系图三种业务类型，三者统一使用 `flowchart` 语法；删除其他 Mermaid 类型在生成、正文预览和 Word 导出中的支持，不迁移或兼容旧计划数据。
+
+### Phases
+- [completed] 1. 增加 Mermaid 业务类型并收敛正文编排提示词、归一化、校验和修复。
+- [completed] 2. 将正文编排计划升级为 v3，并完整持久化计划契约。
+- [completed] 3. 在前端预览和 Word 导出中拒绝非 `flowchart` Mermaid 语法。
+- [completed] 4. 更新配置文案和提示词文档。
+- [completed] 5. 运行 CJS 语法检查、客户端构建和定向功能验证。
+
+### Decisions
+- 业务类型使用 `process/hierarchy/responsibility`，中文分别为流程图、层级图、职责关系图。
+- 三种业务类型只允许 `flowchart TD/TB/LR/RL/BT`，不接受 `graph` 别名和其他 Mermaid 语法族。
+- 不支持类型不自动转换、不降级、不读取缓存；预览显示现有错误卡，Word 导出沿用 warning 和红色占位。
+- 不增加用户类型选择器，由正文编排模型决定业务类型。
+- 不新增 SQLite 列、IPC、preload 或 Analytics 字段。
+
+### Errors Encountered
+| Error | Attempt | Resolution |
+| --- | --- | --- |
+| 首次 Word 导出拒绝 smoke 未产生 warning | `node -e` 构造 Mermaid Markdown | 测试命令把换行写成字面量 `\\n`，Markdown 被解析为行内代码；改为真实换行后通过。 |
+
+### Validation
+- `node --check` 通过：`mermaidPolicy.cjs`、`contentGenerationTask.cjs`、`technicalPlanStore.cjs`、`exportService.cjs`。
+- Mermaid 策略 smoke 通过：三种业务类型和五种 flowchart 方向被接受；graph、sequenceDiagram、timeline、gantt、pie、classDiagram 被拒绝。
+- Word 导出拒绝 smoke 通过：sequenceDiagram 不读取缓存、不请求转换，并写入“不支持类型” warning。
+- `cd client; npm run build` 通过，仅有既有 chunk 体积警告。
+- `git diff --check` 通过，仅有 Windows LF/CRLF 换行提示。
+
+## Current Task: 客户端授权签名校验与统计
+
+### Goal
+实现官方构建签名、客户端本地 license 校验与刷新、Analytics Worker 免费授权签发、Dashboard 授权配置和客户端统计授权字段。当前版本只做免费授权、记录不可信安装来源、接收授权过期弹窗配置，不做客户端授权 UI 和功能阻断。
+
+### Phases
+- [completed] 1. 建立构建签名、license 数据结构和本地存储边界。
+- [completed] 2. 实现客户端 Main 侧 license 服务、IPC/preload/types 和启动刷新。
+- [completed] 3. 扩展客户端埋点携带 license 简单状态。
+- [completed] 4. 实现 Analytics Worker 授权接口、签名工具、授权配置 KV 和统计字段。
+- [completed] 5. 新增 Dashboard 授权标签，并在客户端统计展示授权字段。
+- [completed] 6. 接入 GitHub Actions 构建签名脚本和文档说明。
+- [completed] 7. 运行 CJS/ESM 语法检查、客户端构建和必要 smoke 验证。
+
+### Decisions
+- 构建签名和 license 签发使用同一套 ECDSA P-256/SHA-256 密钥对；私钥分别作为 GitHub Actions Secret 和 Worker Secret，公钥打进客户端。
+- `clientId/clientCreatedAt` 复用现有 `analytics_client_id/analytics_created_at`；删除独立 `installId`，指纹公式中需要安装标识的位置使用 `clientId`。
+- 本地授权单独保存到 `userData/license.json`，不写入 `user_config.json`。
+- 客户端只上传足够校验的设备哈希和低敏构建信息，不上传完整原始设备指纹。
+- 免费授权默认 30 天；授权过期弹窗配置默认开启且不可关闭，但客户端本版只保存配置不展示。
+- “不可信的安装来源”本版只记录和上报，不阻断功能、不在客户端显示。
+- 授权配置复用现有 `NOTICE_STORE` KV，按项目名保存最新一份配置，不新增 Cloudflare 存储资源。
+
+### Errors Encountered
+| Error | Attempt | Resolution |
+| --- | --- | --- |
+| 无 | 当前执行 | - |
+
+### Validation
+- `node --check` 已覆盖新增/修改的客户端 license CJS、Worker 授权/统计模块和 Dashboard 授权页面。
+- `cd client; npm run build` 通过，仅有既有 chunk 体积警告。
+- `git diff --check` 通过，仅有 Windows LF/CRLF 换行提示。
+
+## Current Task: Step03 原方案目录 checkpoint 续跑
+
+### Goal
+为已有方案扩写 Step03 的“原方案目录滚动提取”增加 checkpoint：分段提取失败或应用异常关闭后，再次生成目录能按原方案和分段 hash 校验，从已完成分段后的完整旧目录继续。
+
+### Phases
+- [completed] 1. 在技术方案 Store 中新增 `original-outline-runtime.json` 读写清理能力。
+- [completed] 2. 在输入变更和清空流程中清理旧目录提取 runtime。
+- [completed] 3. 在旧方案目录滚动提取中保存 `current_outline` 和 `next_segment_index`，并在重启后校验恢复。
+- [completed] 4. 增加目录生成异常关闭恢复，把 stale `running/pausing` 标记为可重新执行的错误状态。
+- [completed] 5. 运行 CJS 语法检查和客户端构建。
+
+### Decisions
+- checkpoint 文件保存为 `workspace/technical-plan/original-outline-runtime.json`，不新增 SQLite 表。
+- 恢复条件为 runtime 版本、阶段、原方案 hash、分段数量和所有分段 hash 完全一致。
+- 每段成功后保存当前完整旧目录和下一段 0-based 下标；所有分段完成后清理 runtime。
+- 单段原方案仍走原单次提取路径，并清理残留 runtime。
+- 异常关闭后目录任务状态不自动继续执行，只提示重新生成；重新生成时由 checkpoint 接续旧目录提取。
+
+### Errors Encountered
+| Error | Attempt | Resolution |
+| --- | --- | --- |
+| 无 | 本轮实现 | - |
+
+### Validation
+- `cd client; node --check electron\services\outlineGenerationTask.cjs` 通过。
+- `cd client; node --check electron\services\technicalPlanStore.cjs` 通过。
+- `cd client; node --check electron\services\taskService.cjs` 通过。
+- `cd client; npm run build` 通过，仅有既有 chunk 体积警告。
+
+## Current Task: 旧方案目录提取逻辑收敛
+
+### Goal
+按用户明确要求收敛已有方案扩写旧方案目录提取：旧方案目录提取只保留初始分段滚动处理，不做动态长度预算二次拆分，也不在旧目录提取失败时切 Agent；Step05 的“原方案还原映射”和“已还原正文优化扩写”继续按完整 messages 超 `context_length_limit * 0.7` 才切 Agent。
+
+### Phases
+- [completed] 1. 删除旧方案目录提取动态预算二次拆分函数和调用点。
+- [completed] 2. 删除旧目录提取失败后的 Agent 兜底调用。
+- [completed] 3. 保持旧方案目录补漏按初始分段逐段处理，不再二次细分。
+- [completed] 4. 运行 CJS 语法检查、客户端构建和 diff 检查。
+
+### Decisions
+- 信任 `splitOriginalPlanSourceText()` 的初始分段结果。
+- 不检查旧目录滚动 prompt 拼接长度。
+- 不拆 `previousOutline` / `outline` 完整目录 JSON。
+- 旧目录提取失败直接失败；补漏失败仍沿用现有逻辑，记录日志后使用首次提取目录。
+- 不改 Step05 两个正文 Agent 分支。
+
+### Errors Encountered
+| Error | Attempt | Resolution |
+| --- | --- | --- |
+| 无 | 本轮实现 | - |
+
+### Validation
+- `cd client; node --check electron\services\outlineGenerationTask.cjs` 通过。
+- `cd client; node --check electron\services\contentGenerationTask.cjs` 通过。
+- `cd client; node --check electron\services\opencode\opencodeRuntimeService.cjs` 通过。
+- `cd client; npm run build` 通过，仅有既有 chunk 体积警告。
+
+## Current Task: Agent 任务队列评审修复
+
+### Goal
+修复评审指出的并发已还原正文优化扩写问题：当多个超阈值小节同时进入 Agent 路径时，不再因为 OpenCode runtime 只允许一个 active task 而把后续小节标记失败；保持同时只运行一个 Agent 任务，但为所有 Agent 调用提供全局 FIFO 排队。
+
+### Phases
+- [completed] 1. 确认 Agent runtime 的 busy 行为和现有调用方影响范围。
+- [completed] 2. 在 OpenCode runtime 中新增全局 FIFO 队列，保留单 active task 执行约束。
+- [completed] 3. 支持排队任务按 AbortSignal 取消，避免正文生成暂停后队列悬空。
+- [completed] 4. 同步 Agent runtime 状态类型和顶部状态条排队数量展示。
+- [completed] 5. 运行 CJS 语法检查、客户端构建和 diff 检查。
+
+### Decisions
+- 队列放在 `opencodeRuntimeService.cjs`，覆盖正文生成、目录修复、自检外的所有 `agentService.runTask()` 调用。
+- `runTask()` 负责入队，内部 `runTaskNow()` 仍保持一次只执行一个 Agent 任务。
+- 设置自检在已有 active 或 queued 任务时继续返回 busy，不抢占业务队列。
+- 排队任务收到上层 AbortSignal 后从队列移除并沿用原取消/暂停错误。
+
+### Errors Encountered
+| Error | Attempt | Resolution |
+| --- | --- | --- |
+| 首次队列入口把 `stopped` 状态当作拒绝条件 | 复核首个 Agent 任务启动路径 | 已改为只在 `closing` 或已有 close promise 时拒绝，保留首次任务自动启动 Agent 服务的行为 |
+
+### Validation
+- `cd client; node --check electron\services\opencode\opencodeRuntimeService.cjs` 通过。
+- `cd client; node --check electron\services\contentGenerationTask.cjs` 通过。
+- `cd client; npm run build` 通过，仅有既有 chunk 体积警告。
+- `git diff --check -- client/electron/services/opencode/opencodeRuntimeService.cjs client/src/shared/types/ipc.ts client/src/app/AgentRuntimeStatusBar.tsx` 通过，仅有 LF/CRLF 提示。
+
+## Current Task: Step05 超长原方案还原切 Agent
+
+### Goal
+只处理已有方案扩写 Step05 的两个超长风险点：原方案还原映射、已还原正文优化扩写。普通 AI 请求在 messages 估算长度超过文本模型上下文 `context_length_limit * 0.7` 时切换到 Agent 文件模式，由 Agent 分步处理文件并输出结果，程序读取输出后写回 SQLite/目录正文。
+
+### Phases
+- [completed] 1. 更新计划记录并确认本轮只处理两个超长点。
+- [completed] 2. 新增正文任务 messages 长度判断和 Agent JSON/Markdown 输出解析辅助函数。
+- [completed] 3. 实现原方案还原映射超阈值切 Agent，输出 assignments 后复用现有写回逻辑。
+- [completed] 4. 实现已还原正文优化扩写超阈值切 Agent，输出 optimized-section.md 后复用现有写回逻辑。
+- [completed] 5. 运行 `node --check electron\services\contentGenerationTask.cjs`、`npm run build` 和 diff 检查。
+
+### Decisions
+- 触发阈值固定为 `context_length_limit * 0.7`，只在实际构造 messages 后判断。
+- Agent 只处理超阈值请求；短文本继续走现有普通 AI 路径。
+- 原方案还原 Agent 只输出 `assignments`，不生成正文，正文仍由程序拼接真实原文。
+- 优化扩写 Agent 输出当前小节完整正文文件，程序再归一化、去标题并写回。
+- 本轮不处理覆盖审计、覆盖修复、知识库素材和其他中风险点。
+
+### Errors Encountered
+| Error | Attempt | Resolution |
+| --- | --- | --- |
+| 无 | 当前执行 | - |
+
+### Validation
+- `cd client; node --check electron\services\contentGenerationTask.cjs` 通过。
+- `cd client; npm run build` 通过，仅有既有 chunk 体积警告。
+- `git diff --check -- client/electron/services/contentGenerationTask.cjs` 通过，仅有 LF/CRLF 提示。
+
+## Current Task: 旧方案目录提取长上下文分段
+
+### Goal
+为“已有方案扩写”的旧方案目录提取增加长上下文分段处理：短原方案保持单次提取；长原方案按段滚动提交“上一轮完整目录 + 当前段原文”，每轮输出截至当前段的完整目录 JSON；旧方案目录补漏同样分段，避免再次一次性提交完整原方案；目录结果不携带正文 content。
+
+### Phases
+- [completed] 1. 更新计划记录并确认 `outlineGenerationTask.cjs` 旧方案目录提取边界。
+- [completed] 2. 引入旧方案目录专用归一化与原文切段预算工具。
+- [completed] 3. 实现滚动分段目录提取，并保持短文本单次提取行为。
+- [completed] 4. 将旧方案目录补漏改为分段 additions 合并。
+- [completed] 5. 运行 `node --check electron\services\outlineGenerationTask.cjs` 和 `cd client; npm run build`。
+
+### Decisions
+- 旧方案目录 JSON 只保留 `id/title/description/children`，不保存正文 `content`。
+- 不新增“上一轮一级目录不能删除或重排”的程序校验，由 AI 按 prompt 尽量保留和修正。
+- 分段提取必须顺序执行，因为每段依赖上一轮完整目录。
+- 补漏阶段不再提交完整原方案全文，改为逐段基于当前完整目录返回 additions。
+
+### Errors Encountered
+| Error | Attempt | Resolution |
+| --- | --- | --- |
+| 无 | 当前执行 | - |
+
+### Validation
+- `cd client; node --check electron\services\outlineGenerationTask.cjs` 通过。
+- `cd client; npm run build` 通过，仅有既有 chunk 体积警告。
+- `git diff --check -- client/electron/services/outlineGenerationTask.cjs task_plan.md progress.md findings.md` 通过，仅有 LF/CRLF 提示。
+
 ## Current Task: Analytics IP 统计与垃圾埋点识别
 
 ### Goal
@@ -1913,3 +2190,133 @@
 
 ### Validation
 - `git diff --check -- client/开发说明.md` 通过，仅有 LF/CRLF 提示。
+
+## Current Task: 全文配图标题统一编排
+
+### Goal
+把每张图片的最终标题提升为全文图片计划的权威字段，由图片编排 Agent 统一设计并校验唯一性；HTML、Mermaid、AI 三类生成阶段只使用并注入该标题，不再自行生成标题，以降低相似正文生成重复图片和相同图注的概率。
+
+### Phases
+- [completed] 1. 升级图片计划版本、Agent 输出契约和标题校验。
+- [completed] 2. 统一三类图片生成提示词、日志和正文图注的标题来源。
+- [completed] 3. 删除全部旧图片计划兼容，不提供迁移、回退或自动重编排。
+- [completed] 4. 更新开发说明并运行定向 smoke、语法检查和客户端构建。
+
+### Decisions
+- `title` 保存最终图注正文，不包含固定前缀“图：”，必须以“图”结尾。
+- 最终计划中的标准化标题必须唯一；不增加文本相似度算法或额外 `visual_focus` 字段。
+- 新版生成阶段不得临时拼接或请求标题，三类提示词都必须注入计划标题。
+- 图片计划升级为 v3，只接受包含有效 `title` 的 v3 计划，不迁移、不回退、不自动重编排旧数据。
+- 不修改 SQLite schema、IPC、preload、统计面板或 Word 导出链路。
+
+### Errors Encountered
+| Error | Attempt | Resolution |
+| --- | --- | --- |
+| 无 | 当前执行 | - |
+
+### Validation
+- 3 个相关 CJS 文件 `node --check` 通过。
+- 图片计划 smoke 通过：v3 标题可落盘，缺失/前缀/后缀错误被拒绝，标准化重复标题被拒绝，标题变化会改变 revision 和 item_id。
+- 三类生成 smoke 通过：AI/HTML/Mermaid 提示词均注入计划标题，Mermaid 只返回 code，最终 Markdown 图注精确使用计划标题。
+- 旧数据兼容残留扫描通过：不存在自动重编排、`generation.title` 或 `image_type` 图注回退；v2 计划在生成入口被直接拒绝。
+- `cd client; npm run build` 通过，仅有既有 chunk 体积警告；`git diff --check` 仅有 LF/CRLF 提示。
+
+## Current Task: 新手用户使用手册
+
+### Goal
+结合当前客户端代码与已安装软件的真实界面，在项目根目录新增“使用说明”文件夹，编写一份简洁的 Markdown 用户手册；内容分为“配置”和“使用”两部分，只介绍已经完成、适合普通用户使用的功能，并配真实界面截图和必要标注。
+
+### Phases
+- [completed] 1. 核对菜单、设置项、主要业务流程和已完成能力。
+- [completed] 2. 打开已安装软件，沿现有结果逐页采集并标注截图。
+- [completed] 3. 编写“使用说明/用户使用手册.md”并整理图片资源。
+- [completed] 4. 检查 Markdown 链接、图片可读性和内容准确性。
+- [completed] 5. 使用前台窗口原始分辨率无损 PNG 方式重新采集全部手册截图。
+- [completed] 6. 按二级标题建文件夹、三级标题建 Markdown 文件，新增总索引并移除单文件手册。
+- [completed] 7. 校验目录结构、相对链接、图片格式、清晰度和内容完整性。
+- [completed] 8. 删除根总目录文件及所有返回、上一篇、下一篇导航文案。
+- [completed] 9. 为每张截图添加不遮挡界面的重点点击/注意事项标注。
+- [completed] 10. 复核标注清晰度、界面保真度、文档链接和最终目录结构。
+
+### Decisions
+- 面向新手，只写“在哪里点、选择什么、下一步做什么、最后得到什么”。
+- 手册严格分为“配置”和“使用”两部分。
+- 利用软件里已生成的现有结果向后查看，不重新执行耗时生成任务。
+- 未完成、开发者专用或界面上不可稳定使用的能力不写入手册。
+- 拆分后 `使用说明/配置/` 和 `使用说明/使用/` 分别对应原二级标题；原三级标题各自成为独立 Markdown 文件，原四级标题留在对应文件内。
+- 新截图改用前台应用窗口物理像素边界直接保存为无损 PNG，不再使用压缩 JPEG 截图。
+- 第三次调整后不保留根 README 或任何文档间导航链接，用户直接按文件夹和文件名打开章节。
+- 截图标注使用少量高对比编号、箭头和短中文提示，优先标出必须点击、需要等待完成和提交前需复核的位置；不得遮挡原界面关键文字。
+
+### Errors Encountered
+| Error | Attempt | Resolution |
+| --- | --- | --- |
+| Windows 下 `rg` 参数直接使用 `pages/*.tsx` 通配符时报路径语法错误 | 定向搜索技术方案页面文案 | 改为搜索 `client/src/features/technical-plan/pages` 目录，成功获得结果。 |
+| 图片链接与行尾空白组合验证命令退出码为 1 | 文档初次验证 | 图片链接实际为 14 个且缺失 0；退出码来自 `rg` 未找到行尾空白，改为分别判断验证结果。 |
+| 截图数据实际为 JPEG，但最初按 `.png` 扩展名保存 | 图片签名验证 | 在确认源和目标都位于 `使用说明/images/` 后统一改名为 `.jpg`，并更新全部 Markdown 图片链接。 |
+| 首次把鼠标移到 `(1900,1180)` 超出最大化窗口逻辑高度 1152 | 新截图清理光标位置 | 改为右下角安全空白坐标 `(1900,1135)`，等待 1.6 秒后再抓取。 |
+| 恢复技术方案 Step05 时，Step01 首次无障碍快照未暴露底部“下一步”按钮 | 自动恢复原页面 | 等待并目视确认按钮位置后，使用稳定坐标连续导航四步，最终以 `STEP 05/正文生成` 文本验证恢复成功。 |
+| 首批标注图受原图 144 DPI 与输出画布 96 DPI 差异影响，合成后出现缩放和透明黑区 | 批量生成重点标注图 | 改为按原图完整像素矩形绘制并保留原始分辨率，重新生成全部标注图。 |
+| 图片四角透明度检查把窗口原有圆角透明像素误判为异常 | 最终图片完整性检查 | 改为标注图与对应原图逐点抽样对照，确认没有新增透明区域。 |
+
+### Validation
+- 手册严格保留 2 个一级内容部分：“配置”和“使用”。
+- 15 个 Markdown 图片链接全部存在，对应 15 个 JPEG 文件；JPEG 文件头、文件尾签名全部有效。
+- Markdown 行尾空白为 0，图片链接缺失为 0，遗留 `.png` 引用为 0。
+- 抽查文本模型配置页和正文生成页本地图片，清晰度和内容正常，API Key 仅显示掩码。
+- 软件查看结束后已恢复到技术方案 Step05 正文结果页，再关闭窗口；未触发重新生成、模型测试、自检或导出。
+- 二次调整后结构验证：根 README 存在，旧单文件手册不存在，`配置/` 4 个文件、`使用/` 6 个文件，共 11 个 Markdown 文件。
+- 链接验证：15 个图片链接、37 个文档链接，缺失链接为 0；全部 Markdown 行尾空白为 0。
+- 图片验证：15 张 PNG 均可读取，尺寸统一为 2902×1750，旧 JPEG 文件为 0；抽查设置、目录和查重结果画面清晰、无过渡黑块。
+- 二次截图结束后再次恢复到技术方案 Step05 正文结果页并关闭软件，未触发生成、测试、自检或导出。
+- 第三次调整后根目录文件数为 0；`配置/` 4 个 Markdown、`使用/` 6 个 Markdown，共 10 个章节文件。
+- 10 个章节内“总目录、上一篇、下一篇、开始使用”匹配数为 0，Markdown 行尾空白为 0。
+- 14 个图片引用全部指向 `images/标注/`，缺失引用为 0；14 张标注 PNG 均为 2902×1750。
+- 标注图与对应原图逐点抽样对照，没有新增透明区域；抽查配置、目录编辑、知识库、查重和废标检查页面，标注清晰且箭头落点准确。
+
+## Current Task: 易标用户手册自动化 Skill
+
+### Goal
+在个人 Codex Skill 目录创建 `yibiao-user-manual`，将易标用户手册的代码核对、发行版检查、范围控制、高清截图、确定性标注、Markdown 创建/更新和验证流程固化为可直接调用的 Skill。
+
+### Phases
+- [completed] 1. 初始化个人 Skill 骨架并确定调用接口。
+- [completed] 2. 实现发行版窗口截图、确定性标注和手册校验脚本。
+- [completed] 3. 编写 Skill 工作流、易标项目规则和界面元数据。
+- [completed] 4. 执行 Skill、脚本和当前手册验证。
+- [completed] 5. 隔离验证范围控制与阻塞场景，完成交付。
+
+### Decisions
+- Skill 安装到 `C:/Users/Administrator/.codex/skills/yibiao-user-manual`，默认调用名为 `$yibiao-user-manual`。
+- 用户指定功能范围时只修改该范围；完整手册校验只读报告范围外问题。
+- 发行版路径无法确认时必须询问用户，不以开发版代替。
+- 目标流程没有现成数据时停止制作，提示用户自行完成流程后再次调用 Skill。
+- 最终截图使用确定性叠加标注，保留原始 PNG 像素和分辨率。
+
+### Errors Encountered
+| Error | Attempt | Resolution |
+| --- | --- | --- |
+| `init_skill.py` 拒绝 23 字符的 `short_description`，只留下未完成模板 | 首次初始化 Skill | 清理本次新建目录，改用 25–64 字符范围内的描述重新初始化。 |
+| Windows 参数编码导致初始化生成的 `agents/openai.yaml` 中文元数据乱码 | 检查 Skill 骨架 | 使用 UTF-8 补写正确界面元数据，并在最终验证中重新读取确认。 |
+| 损坏的 `agents/openai.yaml` 含非法 UTF-8 字节，`apply_patch` 无法读取并使整批补丁失败 | 首次写入 Skill 正文与参考文件 | 单独删除初始化生成的损坏文件，再用补丁创建合法 UTF-8 文件；其余文件分批写入。 |
+| 联合验证命令把循环变量命名为 `$error`，与 PowerShell 只读 `$Error` 冲突 | 首次脚本语法检查 | 改用 `$parseError`，并拆分验证命令以保留各项输出。 |
+| Windows PowerShell 5.1 将无 BOM UTF-8 `.ps1` 按本地编码读取，中文字符串损坏并触发连锁语法错误 | 三个脚本首次语法解析 | 将脚本源码改为纯 ASCII；中文目录和导航词使用 Unicode 码点运行时构造，UTF-8 JSON 文案继续正常支持中文。 |
+| `quick_validate.py` 继承 Python GBK 默认编码，读取 UTF-8 中文 `SKILL.md` 失败 | 首次 Skill 结构验证 | 设置 `PYTHONUTF8=1` 后重新运行官方校验器。 |
+| PowerShell 5.1 在 `[pscustomobject]` 中直接展开 `List[object]` 触发 `Argument types do not match` | 首次运行手册校验脚本 | 在结果对象中显式调用 `ToArray()`，避免旧版动态绑定器处理泛型列表。 |
+| 截图测试命令把管道写在 `finally` 块之后，PowerShell 报空管道元素 | 首次窗口截图运行测试 | 先保存图片检查对象并释放句柄，再单独格式化输出。 |
+| 单个窗口候选被 PowerShell 自动展开为进程标量，严格模式访问 `.Count` 失败 | 窗口截图脚本首次实际运行 | 在调用点使用 `@(...)` 强制保持候选数组。 |
+| 标注测试命令再次把管道接在 `finally` 块之后，重复触发空管道解析错误 | 首次标注运行测试 | 统一采用 `$check = ...; finally {...}; $check | Format-List`，不再复制旧测试写法。 |
+| `CopyFromScreen` 只捕获屏幕可见像素，目标易标窗口被 Codex 遮挡时生成了错误应用截图 | 窗口截图脚本目视验证 | 改用 Win32 `PrintWindow(PW_RENDERFULLCONTENT)` 直接绘制目标窗口，不依赖前台遮挡状态。 |
+| 原始分辨率图片预览出现分块黑区，初看像标注图合成不完整 | 标注脚本目视验证 | 网格 alpha、Pillow 解码和高质量预览均确认文件完整；判定为原始分辨率预览分块渲染问题，脚本无需修改。 |
+| `agents/openai.yaml` 元数据布局测试出现断言失败 | UTF-8 元数据与目录测试 | 确认文件值正确，失败来自测试源码中文常量经 PowerShell 管道编码；改用 ASCII Unicode 转义后通过。 |
+
+### Validation
+- 官方 `quick_validate.py` 已通过。
+- 三个 PowerShell 脚本均为 ASCII 源码并通过 PowerShell 5.1 语法解析。
+- 当前手册校验通过：配置 4 篇、使用 6 篇、图片引用 14 个、问题 0。
+- 窗口脚本通过 `PrintWindow` 生成 2560×1368 的真实易标发行版 PNG。
+- 标注脚本保持 2560×1368，网格检查新增透明样本为 0，未标注区域像素保持不变。
+- 隔离范围测试通过：范围内 0 个阻塞问题、范围外 1 个只读报告；完整检查正确失败。
+- 三个独立前向测试分别验证限定范围、路径未知和页面无数据行为，结果全部符合 Skill 规则。
+- 最终 UTF-8 检查、三脚本语法、当前手册 10 篇/14 图完整校验和规划文件 diff 检查全部通过。
+- 临时测试目录已删除，由测试启动的发行版进程已正常关闭。

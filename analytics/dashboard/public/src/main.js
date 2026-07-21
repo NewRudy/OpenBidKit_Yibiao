@@ -3,6 +3,7 @@ import { loadAgentRuntime } from './pages/agentRuntime.js';
 import { loadClients, loadClientDetail, loadIpStats } from './pages/clients.js';
 import { loadConfigUsage, loadModelUsage } from './pages/configUsage.js';
 import { loadLatest } from './pages/latest.js';
+import { downloadOfflineLicense, generateOfflineLicense, loadLicenseConfig, saveLicenseConfig } from './pages/license.js';
 import { disableNotice, loadNotice, publishNotice } from './pages/notice.js';
 import { loadOverview } from './pages/overview.js';
 import { bindResourceEvents, loadResources } from './pages/resources.js';
@@ -21,6 +22,7 @@ const tabLoaders = {
   agent: () => loadAgentRuntime(),
   latest: (options = {}) => loadLatest(options),
   notice: () => loadNotice(),
+  license: () => loadLicenseConfig(),
   resources: () => loadResources(),
 };
 
@@ -76,6 +78,10 @@ function bindEvents() {
   state.loadNoticeButton.addEventListener('click', () => loadNotice().catch(() => undefined));
   state.publishNoticeButton.addEventListener('click', publishNotice);
   state.disableNoticeButton.addEventListener('click', disableNotice);
+  state.loadLicenseConfigButton.addEventListener('click', () => loadLicenseConfig().catch(() => undefined));
+  state.saveLicenseConfigButton.addEventListener('click', saveLicenseConfig);
+  state.generateOfflineLicenseButton.addEventListener('click', generateOfflineLicense);
+  state.downloadOfflineLicenseButton.addEventListener('click', downloadOfflineLicense);
   bindResourceEvents();
   state.prevLatestPage.addEventListener('click', () => {
     appState.latestPage = Math.max(1, appState.latestPage - 1);

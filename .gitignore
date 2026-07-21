@@ -183,8 +183,12 @@ celerybeat.pid
 *.sage.py
 
 # Environments
+.agents/skills/*/.env.local
+/.sync-user-manual-state.local.json
 .env
 .envrc
+.env_cf.secrets
+.env.secrets
 .dev.vars
 .venv
 env/
@@ -262,3 +266,6 @@ __marimo__/
 
 tools/测试文件/
 tools/对比结果/
+donotsync/
+testfiles/
+doc/

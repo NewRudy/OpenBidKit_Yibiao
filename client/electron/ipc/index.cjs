@@ -7,6 +7,7 @@ const { registerDuplicateCheckIpc } = require('./duplicateCheckIpc.cjs');
 const { registerExportIpc } = require('./exportIpc.cjs');
 const { registerFileIpc } = require('./fileIpc.cjs');
 const { registerKnowledgeBaseIpc } = require('./knowledgeBaseIpc.cjs');
+const { registerLicenseIpc } = require('./licenseIpc.cjs');
 const { registerRejectionCheckIpc } = require('./rejectionCheckIpc.cjs');
 const { registerTaskIpc } = require('./taskIpc.cjs');
 const { registerTechnicalPlanIpc } = require('./technicalPlanIpc.cjs');
@@ -15,18 +16,22 @@ const { registerSystemFontIpc } = require('./systemFontIpc.cjs');
 const { createAgentService } = require('../services/agentService.cjs');
 const { createAiService } = require('../services/aiService.cjs');
 const { createConfigStore } = require('../services/configStore.cjs');
+const { createDeveloperExpansionReplaceTestService } = require('../services/developerExpansionReplaceTest.cjs');
 const { createDuplicateCheckService } = require('../services/duplicateCheckService.cjs');
 const { createDuplicateCheckStore } = require('../services/duplicateCheckStore.cjs');
 const { createExportService } = require('../services/exportService.cjs');
 const { createFileService } = require('../services/fileService.cjs');
 const { createKnowledgeBaseService } = require('../services/knowledgeBaseService.cjs');
 const { createKnowledgeBaseStore } = require('../services/knowledgeBaseStore.cjs');
+const { createLicenseService } = require('../services/licenseService.cjs');
 const { createRejectionCheckStore } = require('../services/rejectionCheckStore.cjs');
 const { createSqliteDatabase } = require('../services/sqliteDatabase.cjs');
 const { createSystemFontService } = require('../services/systemFontService.cjs');
 const { createTaskService } = require('../services/taskService.cjs');
 const { createTechnicalPlanStore } = require('../services/technicalPlanStore.cjs');
 const { createTemplateStore } = require('../services/templateStore.cjs');
+const { checkRequiredOnlineServices, getRequiredOnlineServiceStatus } = require('../services/requiredOnlineServices.cjs');
+const { initLocalImageRenderService } = require('../services/localImageRenderService.cjs');
 
 function normalizeExternalUrl(value) {
   const raw = String(value || '').trim();
@@ -38,6 +43,20 @@ function normalizeExternalUrl(value) {
     return ['http:', 'https:'].includes(url.protocol) ? url.toString() : null;
   } catch {
     return null;
+  }
+}
+
+function sendToWebContents(webContents, channel, payload) {
+  if (!webContents || webContents.isDestroyed?.()) {
+    return false;
+  }
+
+  try {
+    webContents.send(channel, payload);
+    return true;
+  } catch (error) {
+    console.warn('[ipc] 发送渲染进程事件失败', { channel, message: error?.message || String(error) });
+    return false;
   }
 }
 
@@ -177,8 +196,12 @@ function registerWorkspaceDatabaseServices({ app, configStore, aiService, agentS
 }
 
 function registerIpcHandlers({ app, mainWindow, checkAndDownloadUpdate, triggerUpdateDownload, quitAndInstall, getLatestVersion, getUpdateDownloadUrl, gpuStartupState = {}, gpuTrialArg = '--yibiao-trial-hardware-acceleration', forceDisableGpuArgs = [], openDeveloperTokenStatsWindow, closeDeveloperTokenStatsWindow }) {
+  void checkRequiredOnlineServices();
   const configStore = createConfigStore(app);
+  initLocalImageRenderService({ configStore });
+  const licenseService = createLicenseService({ app, configStore });
   const aiService = createAiService({ app, configStore });
+  const developerExpansionReplaceTestService = createDeveloperExpansionReplaceTestService({ aiService });
   const agentService = createAgentService({ app, configStore, mainWindow });
   const fileService = createFileService({ app, configStore });
   const exportService = createExportService({ configStore });
@@ -254,7 +277,8 @@ function registerIpcHandlers({ app, mainWindow, checkAndDownloadUpdate, triggerU
       }
     },
   });
-  registerDeveloperIpc({ configStore, aiService, openDeveloperTokenStatsWindow });
+  registerDeveloperIpc({ configStore, aiService, openDeveloperTokenStatsWindow, developerExpansionReplaceTestService });
+  registerLicenseIpc({ licenseService });
   registerAiIpc({ aiService });
   registerAgentIpc({ agentService, mainWindow });
   registerFileIpc({ fileService });
@@ -267,6 +291,12 @@ function registerIpcHandlers({ app, mainWindow, checkAndDownloadUpdate, triggerU
       console.warn('[agent] warmup failed', error?.message || String(error));
     });
   }, 500);
+
+  setTimeout(() => {
+    void licenseService.refreshOnStartup?.().catch((error) => {
+      console.warn('[license] startup refresh failed', error?.message || String(error));
+    });
+  }, 800);
 
   const startWorkspaceDatabase = () => {
     if (workspaceDatabaseStarted) return;
@@ -297,6 +327,7 @@ function registerIpcHandlers({ app, mainWindow, checkAndDownloadUpdate, triggerU
   }
 
   ipcMain.handle('app:get-version', () => app.getVersion());
+  ipcMain.handle('required-online-services:get-status', () => getRequiredOnlineServiceStatus());
 
   ipcMain.handle('app:get-gpu-hardware-acceleration-status', () => {
     const config = configStore.load();
@@ -367,13 +398,13 @@ function registerIpcHandlers({ app, mainWindow, checkAndDownloadUpdate, triggerU
       mainWindow,
       configStore,
       onProgress: (percent) => {
-        webContents.send('app:update-progress', { percent });
+        sendToWebContents(webContents, 'app:update-progress', { percent });
       },
       onDownloaded: (version) => {
-        webContents.send('app:update-downloaded', { version });
+        sendToWebContents(webContents, 'app:update-downloaded', { version });
       },
       onError: (message) => {
-        webContents.send('app:update-error', { message });
+        sendToWebContents(webContents, 'app:update-error', { message });
       },
     });
   });
@@ -385,13 +416,13 @@ function registerIpcHandlers({ app, mainWindow, checkAndDownloadUpdate, triggerU
       mainWindow,
       configStore,
       onProgress: (percent) => {
-        webContents.send('app:update-progress', { percent });
+        sendToWebContents(webContents, 'app:update-progress', { percent });
       },
       onDownloaded: (version) => {
-        webContents.send('app:update-downloaded', { version });
+        sendToWebContents(webContents, 'app:update-downloaded', { version });
       },
       onError: (message) => {
-        webContents.send('app:update-error', { message });
+        sendToWebContents(webContents, 'app:update-error', { message });
       },
     });
   });

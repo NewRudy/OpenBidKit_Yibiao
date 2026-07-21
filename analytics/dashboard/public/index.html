@@ -53,6 +53,7 @@
       <button class="tab-button" type="button" data-tab-button="agent">Agent分析</button>
       <button class="tab-button" type="button" data-tab-button="latest">最近事件</button>
       <button class="tab-button" type="button" data-tab-button="notice">公告管理</button>
+      <button class="tab-button" type="button" data-tab-button="license">授权管理</button>
       <button class="tab-button" type="button" data-tab-button="resources">资源管理</button>
     </nav>
 
@@ -62,6 +63,8 @@
         <div class="panel card"><span>累计页面访问量</span><strong id="totalView">0</strong></div>
         <div class="panel card"><span>累计事件数</span><strong id="totalEvents">0</strong></div>
         <div class="panel card"><span>累计 AI 请求</span><strong id="totalAiRequests">0</strong></div>
+        <div class="panel card"><span>Token 消耗量</span><strong id="totalTextTokens">0</strong></div>
+        <div class="panel card"><span>生成图片数</span><strong id="totalGeneratedImages">0</strong></div>
         <div class="panel card"><span>总客户端数</span><strong id="totalClients">0</strong></div>
         <div class="panel card"><span>今日活跃客户端</span><strong id="todayActiveClients">0</strong></div>
         <div class="panel card"><span>今日新增客户端</span><strong id="todayNewClients">0</strong></div>
@@ -283,6 +286,85 @@
           <button id="publishNoticeButton" type="button">发布公告</button>
         </div>
         <div id="noticeStatus" class="notice-status"></div>
+      </section>
+    </section>
+
+    <section id="tab-license" class="tab-panel" data-tab-panel="license">
+      <section class="panel section notice-panel">
+        <div class="section-head">
+          <div>
+            <h2>授权管理</h2>
+            <p>免费授权和离线授权分别配置弹窗规则；客户端使用相同字段执行过期提醒逻辑。</p>
+          </div>
+          <button id="loadLicenseConfigButton" type="button">读取授权配置</button>
+        </div>
+        <div class="license-management-grid">
+          <div class="license-management-card">
+            <h3>免费授权策略</h3>
+            <div id="licenseMeta" class="notice-meta">当前未读取授权配置。</div>
+            <div class="notice-form">
+              <label>
+                免费授权有效期（天）
+                <input id="licenseFreeDays" type="number" min="1" value="30" />
+              </label>
+              <label>
+                授权过期弹窗
+                <select id="licenseExpirePopupEnabled">
+                  <option value="true" selected>开启</option>
+                  <option value="false">关闭</option>
+                </select>
+              </label>
+              <label>
+                过期弹窗是否可关闭
+                <select id="licenseExpirePopupDismissible">
+                  <option value="true" selected>可关闭</option>
+                  <option value="false">不可关闭</option>
+                </select>
+              </label>
+            </div>
+            <div class="notice-actions">
+              <button id="saveLicenseConfigButton" type="button">保存免费授权配置</button>
+            </div>
+          </div>
+          <div class="license-management-card">
+            <h3>离线授权生成</h3>
+            <div class="notice-meta">录入客户端 Client ID 和授权失效期后生成离线授权文件或授权码。</div>
+            <div class="notice-form">
+              <label>
+                Client ID
+                <input id="licenseOfflineClientId" placeholder="粘贴客户端关于页显示的 Client ID" />
+              </label>
+              <label>
+                授权失效期
+                <input id="licenseOfflineExpiresAt" type="date" />
+              </label>
+              <label>
+                授权过期弹窗
+                <select id="licenseOfflineExpirePopupEnabled">
+                  <option value="true" selected>开启</option>
+                  <option value="false">关闭</option>
+                </select>
+              </label>
+              <label>
+                过期弹窗是否可关闭
+                <select id="licenseOfflineExpirePopupDismissible">
+                  <option value="true" selected>可关闭</option>
+                  <option value="false">不可关闭</option>
+                </select>
+              </label>
+              <label class="notice-field-wide">
+                离线授权码
+                <textarea id="licenseOfflineCode" readonly placeholder="生成后在这里复制授权码，也可以下载授权文件。"></textarea>
+              </label>
+            </div>
+            <div class="notice-actions">
+              <button id="downloadOfflineLicenseButton" type="button" disabled>下载授权文件</button>
+              <button id="generateOfflineLicenseButton" type="button">生成离线授权</button>
+            </div>
+            <div id="offlineLicenseStatus" class="notice-status"></div>
+          </div>
+        </div>
+        <div id="licenseStatus" class="notice-status"></div>
       </section>
     </section>
 

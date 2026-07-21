@@ -1,6 +1,41 @@
 # Findings
 
 ## Research Log
+- 当前正文起始编排同时生成写作、知识、事实、表格、AI 图片和 Mermaid 代码，旧实际配图完全依赖每小节 `illustration_type`；新逻辑必须把正文计划升级并移除图片字段，同时让任务在新图片编排后结束，不能继续调用旧配图。
+- 新图片计划天然是文档级结构，因为 HTML 一张图片可以覆盖同一父目录下多个连续叶子节点；最小持久化结构为 `plan_version/items/updated_at`，Agent 原始候选保留在 Agent 归档而不写业务 Store。
+- 图片编排 Agent 可复用正文任务现有 `runContentAgentTask()`，输入 `technical-plan.md`、`outline-tree.json`、`illustration-config.json`，输出 `illustration-plan.json`；程序必须再次校验真实叶子 ID、同父连续范围、允许类型、位置和优先级。
+- 新计划成功前不写 Store；暂停或 Agent 失败后恢复时重新编排，不设计 hash 复用、旧计划迁移或 fallback。
+- 正文任务暂停/异常恢复必须识别 `illustration-planning`；恢复或该阶段失败后重试时应跳过已完成的正文、扩写和审计，直接重跑整轮 Agent，避免重复消耗前序请求。
+- 旧 `technical_plan_content_plans.illustration_type` 已失去业务含义，必须同时从 fresh schema、Store 查询/写入、目录映射恢复和 v17 迁移中删除，不能只让正文任务停止读取。
+- `better-sqlite3` 当前为 Electron 41 的 ABI 145 构建，系统 Node.js 24 使用 ABI 137；SQLite runtime smoke 必须使用仓库内 Electron，不能执行 `npm rebuild` 破坏客户端 native 依赖。
+- TaskService 启动新任务时会先把 Store 中的旧任务替换为 `running`，因此“图片编排失败后重试”的阶段判断必须读取 runner 参数 `previousState`，不能读取已经更新的当前 Store。
+- 正文生成配置当前只有 `useAiImages/maxAiImages/useMermaidImages`；配置整体已保存到 `technical_plan_meta.content_generation_options_json`，因此新增 HTML UI 字段和 Mermaid 上限无需修改 SQLite 表、IPC 或 preload。
+- Main 当前会执行全部未被 AI 生图占用的 Mermaid 候选，没有上限；要实现与 AI 生图一致的控制，需要新增 configured/run Mermaid 上限、扣除保留的 Mermaid 计划，并把候选选择器泛化为按指定优先级字段分布择优。
+- 配置弹窗当前二级说明包括顶部 `section-kicker`、动态 `Dialog.Description`、每项 `<small>` 和 Mermaid 黄色 note；用户已确认全部删除，只保留标题、配置项和操作按钮。
+- HTML 高级设置需要独立草稿，避免用户在第二层弹窗点击取消后仍修改主配置草稿；确认后再写入 `draftGenerationOptions.htmlImageTypes`。
+- Mermaid 上限实现复用了泛化后的 `pickDistributedIllustrationTargets()`：AI 候选按 `image.priority` 先选，剩余 Mermaid 候选按 `mermaid.priority` 再选；两类都按目录顺序分段，保证图片分布而不是只取前 N 个。
+- HTML 配置字段会随全文生成和单章节重新生成 payload 传递，但 `contentGenerationTask.cjs` 不读取这些字段，因此当前不会影响编排、任务统计、正文、缓存或导出。
+- Mermaid 当前只有配图媒介类型 `ai/mermaid/none`，正文编排计划没有流程图、层级图、职责关系图等业务子类型；提示词还明确允许时间线，归一化和校验只检查 `needed/title/code`。
+- 前端 `MarkdownRenderer` 使用完整 Mermaid 库渲染任意 `language-mermaid` 代码块，Word 导出也会把任意 Mermaid 代码交给 `mermaid.ink`；严格删除其他类型支持需要在生成、预览和导出三处共同拒绝非 `flowchart` 语法。
+- 三种目标业务图都可统一用 `flowchart` 表达：流程图使用有向步骤，层级图使用树状布局，职责关系图使用角色/部门节点及职责关系连线；业务类型需要单独保存，不能仅靠 Mermaid 首行推断语义。
+- 正文编排计划当前声明 `CONTENT_PLAN_VERSION = 2`，但 Store 只保存 `value.plan`，会丢失顶层 `plan_version` 和 `table_requirement`；新增 Mermaid 类型后应升级 v3 并保存完整计划对象，不为旧裸 plan JSON 增加兼容分支。
+- Mermaid 收敛已实现为 Main 侧共享策略 `electron/utils/mermaidPolicy.cjs`：业务类型固定为 `process/hierarchy/responsibility`，语法只接受 `flowchart TD/TB/LR/RL/BT`；正文生成与 Word 导出复用该策略，Renderer 在动态加载 Mermaid 前执行等价检查。
+- 不支持类型在正文配图阶段返回取消结果而不是进入 Mermaid 修复或让整个正文任务失败；合法 flowchart 的节点、连线和渲染错误仍沿用最多 3 轮修复。
+- 客户端授权实现边界：官方构建签名只能覆盖构建时字段，不能覆盖启动时才生成的 `clientId` 和 `machineFingerprintHash`；license 必须由 Worker 运行时签发并绑定 `clientId + machineFingerprintHash`。
+- 同一套 ECDSA P-256/SHA-256 密钥可同时用于构建签名和 license 签名；GitHub Actions 和 Worker 都持有私钥，客户端打包公钥，Worker 也用同一公钥校验客户端提交的构建签名。
+- 授权配置是每个项目一份的低频全局策略，和公告相同适合复用 `NOTICE_STORE` KV；统计字段继续走 Analytics Engine 和 `stats_clients`。
+- 客户端机器指纹应只上传/保存最终哈希和 `fingerprintVersion`；Windows/macOS/Linux 原始机器标识、MAC 信息只在 Main 侧本地参与哈希，不进入埋点。
+- `/track` 的 D1 热路径应区分“新客户端插入计数”和“授权字段覆盖”：新客户端仍只在 `client_created_at` 距当前业务日期不超过 1 天时插入并增加 `stats_totals.total_clients`；授权字段可按快照覆盖既有 `stats_clients`，否则首个启动埋点可能把 `missing/refresh_failed` 保留到每日 Cron。
+- release workflow 必须强制要求 `YIBIAO_LICENSE_PRIVATE_KEY_JWK`，不能沿用本地脚本的未签名开发构建行为，否则正式产物会被客户端记录为不可信安装来源。
+- Step03 旧方案目录滚动提取此前只把 `currentOutline` 保存在内存里，任一分段失败或应用异常关闭后都会丢失已完成分段结果；checkpoint 最小持久化边界是原方案 hash、分段 hash、下一段下标和当前完整旧目录 JSON。
+- Step03 checkpoint 不应复用 Step05 的 `content_generation_runtime_json`：旧方案目录提取发生在目录生成任务内部，独立 JSON 文件能避免改 SQLite schema，并可在替换原方案、切换工作流和清空技术方案时直接按文件清理。
+- 旧方案目录提取最终执行边界已按用户明确要求收敛：只信任 `splitOriginalPlanSourceText()` 初始分段；不再对滚动提取或补漏的拼接 messages 做动态长度预算判断；不再因上一轮目录或完整目录变长而二次细分；旧目录提取失败不再走 Agent 兜底。
+- Agent busy 评审根因确认：`opencodeRuntimeService.cjs` 原 `runTask()` 在 `activeTask` 存在时直接返回 `{ status: 'busy', skipped: true }`；`contentGenerationTask.cjs` 的普通 worker pool 在 `contentConcurrency > 1` 时会并发触发多个超阈值 Agent 小节，后续小节因此进入失败处理，而不是等待前一个 Agent 完成。
+- Agent 队列应放在全局 OpenCode runtime，而不是只在正文任务局部串行化；这样目录修复、正文优化扩写、覆盖修复等所有 `agentService.runTask()` 调用共享同一个单执行队列，保持 OpenCode runtime 一次只跑一个任务的约束。
+- Step05 原方案还原映射和已还原正文优化扩写此前都在 `contentGenerationTask.cjs` 中直接构造完整 messages 后调用 `aiService.collectJsonResponse()` / `aiService.chat()`；`aiService` 不会自动按上下文切割，因此超长原方案或超长还原正文会直接撞模型上下文上限。
+- 本轮 Step05 只处理两个高风险点：还原映射属于结构化归属判断，Agent 输出 `assignments` 后仍由程序拼接真实原文；已还原正文优化扩写属于长正文产出，Agent 输出单个小节正文文件后仍由程序归一化、去标题并写回 Store。
+- 旧方案目录提取当前在 `outlineGenerationTask.cjs` 里直接用 `buildExpandOutlineMessages(originalPlanMarkdown)` 一次性提交完整原方案；旧方案补漏也用 `buildOriginalOutlineAdditionsMessages(originalPlanMarkdown, outline)` 一次性提交全文。`aiService.collectJsonResponse/requestJson` 不会自动切割，因此必须在业务任务内显式分段。
+- 旧方案目录 JSON 设计上只应包含目录结构，不包含正文；本轮应使用旧方案专用归一化剥离模型误返回的 `content`，避免污染后续 `outlineData`。
 - IP 统计实现边界：公网 IP 只从 Worker 请求头 `CF-Connecting-IP` 获取，不接受客户端自报；AE 使用空闲 `blob13` 保存 `client_ip`；长期聚合写入 `stats_clients.last_access_ip`，Dashboard IP 统计从 D1 分组分页，避免对 AE 做高基数分页查询。
 - 本轮补字段边界已确认：`stats_versions.client_count` 只来自 `stats_clients.last_active_version` 当前分组重算覆盖；`stats_models.total_tokens` 来自 AE `ai_request` 的 `SUM(double4 * _sample_interval)` 并历史累加；页面访问排行不增加客户端数。
 - 当前 `analyticsStatsStore.js` 历史访问查询只返回 `stats_versions.event_count`，近期 AE 版本查询只返回事件数；需要同步返回版本客户端数。当前模型查询和 rollup 只处理 `request_count`，需要同步返回/写入 `total_tokens`。
@@ -239,3 +274,41 @@
 - 知识库迁移确认弹窗应使用项目内 Radix Dialog，不再使用系统 `window.confirm`；长文案需要拆成可扫描的模块：旧版不再支持继续处理、回退旧版完成解析的建议、只迁移“已完成”文档的规则，以及旧文档总数/可迁移/将跳过三列统计。
 - `client/开发说明.md` 的长期价值在于记录架构边界和协作规则，不适合持续追加功能实现流水账；preload API 清单、具体 Step04 策略、发布排错细节等容易过期，应收敛为原则和权威文件入口。
 - SQLite 重构后埋点排查确认：`ai_request` 主链路未被切断，后台任务仍经 Main 侧 `aiService` 统一上报；技术方案页因状态从 SQLite 异步恢复，会先渲染默认 `document-analysis`，若立即上报会污染首屏子步骤统计，应等待 `technicalPlanStorage.load()` 完成后再上报。
+- 当前相同图注的直接来源已确认：HTML 成功结果把 `image_type` 当标题，AI 按章节标题临时拼接标题，Mermaid 在每张图生成时独立请求标题；三者都没有复用全文图片编排阶段的统一语义主题。新计划必须把顶层 `title` 作为唯一标题来源，生成阶段不再补标题。
+- 全文配图标题统一编排已落地：v3 图片计划把 `title` 纳入 revision/item_id，最终计划按去空白和标点后的标题键拒绝重复；三类生成和 Markdown 图注都只读取 `planItem.title`，不兼容旧图片计划或旧标题字段。
+- 用户手册任务约束：必须基于当前代码和已安装客户端真实界面；内容分“配置”和“使用”；采用最简单的新手语言；可直接沿软件中已有生成结果点击下一步，不重复运行耗时任务；未完成功能跳过。
+- 已安装客户端真实界面确认：设置页包含“通用、文本模型、生图模型、文件解析、智能体配置、关于”六个页签；文本模型提供服务商、Base URL、API Key、模型名称、获取、测试和保存；生图模型为可选配置；文件解析默认推荐“本地解析”；智能体页提供自检和“已有方案扩写-旧目录提取”开关。
+- 技术方案现有结果完整覆盖 Step01 选择标书、Step02 招标文件解析、Step03 目录生成与编辑、Step04 全局事实设定、Step05 正文生成与 Word 导出；所有页面仅导航查看，未触发重新生成。
+- 其他已完成且适合普通用户的功能：文档知识库（文件夹、上传文档、查看条目/Markdown）、标书查重（招标文件 + 多份投标文件，输出元数据/目录/正文/图片四维结果）、废标项检查（废标项、错别字、逻辑谬误三类结果）。商务标、图片知识库、AI评标和投标机会界面均标记为开发中，应从手册跳过。
+- 已在 `使用说明/images/` 保存 15 张真实界面截图，覆盖首页、设置、五步技术方案、知识库、查重和废标项检查；截图仅用于本地项目文档，API Key 均为掩码显示。
+- 手册最终使用 15 张 `.jpg` 截图并全部建立相对链接；内容只保留稳定功能，按“必做/可选”和“在哪里点、下一步做什么”组织，适合新手照着操作。
+- 用户新增要求：旧 JPEG 截图清晰度不足，需改用稳定、无损的原分辨率截图；文档结构按 Markdown 层级拆分，二级标题映射为文件夹，三级标题映射为独立文件。
+- 新截图方案已验证：软件最大化后逻辑窗口约 1920×1152，按 DPI 感知后的物理窗口边界直接截取得到约 2902×1750 的无损 PNG，文字清晰度显著高于旧 1428×906 压缩 JPEG；截图前将鼠标移到右下角空白区域并等待点击提示消失。
+- 拆分后的最终结构为根 README + `配置/` 4 文件 + `使用/` 6 文件；技术方案原四级步骤在独立文件内归一为二级标题，方便单页阅读，同时所有章节提供返回总目录和上一篇/下一篇链接。
+- 最终抽查设置、目录和查重结果三张原图，文字、按钮和结果均清晰；鼠标只停留在右下角边缘，不遮挡操作区域，画面无过渡动画黑块。
+- 用户第三次调整要求：删除总目录和所有上一篇/下一篇/返回总目录导航；重点必须直接标注在截图内部，而不是只写在图片下方。
+- 已用图像编辑能力验证红橙色编号标签、白字和箭头的标注样式；为了保持 2902×1750 原截图及全部界面文字完全不变，最终批量标注沿用该样式并在原图上叠加确定性标注层。
+- 最终文档不再设置根 README，也不保留任何章节间导航；用户直接从 `配置/` 或 `使用/` 文件夹按编号打开章节。
+- 14 张实际被文档引用的截图均已生成标注版，重点覆盖必填配置、保存/测试、选择文件、等待完成、编辑目录、点击下一步、上传文档、切换检查结果及人工复核等操作。
+- 标注版统一保存在 `使用说明/images/标注/`，原始高清 PNG 保留在上级目录，便于以后调整标注而不损失清晰度。
+
+## 易标用户手册自动化 Skill
+
+- Skill 需要同时支持完整创建、增量更新和只读检查；用户明确限定功能时，范围优先级高于完整手册默认行为。
+- 发行版定位规则必须区分“已知且验证通过”和“未知/失效/多候选”；后者应询问用户，不能自动启动开发版。
+- 软件内没有目标流程数据时，正确结果是说明用户需要完成的流程并停止，而不是触发耗时生成或根据代码臆造结果截图。
+- 当前可靠截图规格是 Windows 发行版窗口物理像素无损 PNG；标注应由脚本在原图上叠加，避免生成式编辑重绘界面。
+- 官方初始化脚本已生成标准目录，但 Windows 命令行传入的中文界面元数据写入后乱码；`SKILL.md` 模板本身正常，`agents/openai.yaml` 需要以 UTF-8 明确修正。
+- Windows 应用控制已识别发行版应用 ID `com.yibiao.openbidkit` 并成功启动标题为“易标投标工具箱”的窗口；首次状态为普通窗口约 1428×906，需要在正式截图前通过应用控制能力最大化。
+- 发行版启动后的首页可见且未触发业务操作；顶部仅显示 Agent 启动状态，当前测试可以直接验证窗口捕获，不需要进入任何功能页面。
+- 当前宿主使用 Windows PowerShell 5.1；其脚本文件读取规则要求 UTF-8 BOM 才能安全内嵌中文。由于补丁文件默认无 BOM，个人 Skill 的 `.ps1` 应保持 ASCII 源码以避免编码依赖。
+- 三个 `.ps1` 已调整为纯 ASCII 并通过 PowerShell 5.1 AST 语法解析；中文目录名由码点构造，截图标注中文从 UTF-8 JSON 输入，不影响用户可见结果。
+- 手册校验运行时异常定位到结果对象的 `issues = @($issues)`；PowerShell 5.1 对泛型 `List[object]` 的动态数组展开存在兼容问题，应使用显式 `ToArray()`。
+- `CopyFromScreen` 不能用于稳定的窗口级截图：即使根据易标 HWND 得到正确边界，只要其他窗口遮挡，该矩形内就会抓到遮挡应用。需要改为目标 HWND 的 `PrintWindow` 或等价窗口捕获。
+- 标注测试的两个角落样本一致不足以证明合成完整；当前输出存在大块透明区域，最终测试应扫描全图网格，确认原图有内容的位置不会在标注图变透明。
+- `PrintWindow(PW_RENDERFULLCONTENT)` 对当前 Electron 发行版有效，可在 Codex 窗口位于前台时仍直接得到 2560×1368 的完整易标窗口内容。
+- 标注 PNG 的 25 像素网格检查新增透明样本为 0，Pillow 解码像素与原图一致，高质量预览完整；原始分辨率预览中的黑块是查看工具分块渲染现象，不是文件损坏。
+- 关闭测试发行版时 Windows 应用控制检测到用户输入并拒绝继续；重新获取同一易标窗口对象后截图却显示 Codex，说明该句柄状态不再适合继续发送 UI 输入，应避免用它执行关闭动作。
+- 前向测试确认限定文本模型配置时目标为 1 篇 Markdown、2 张原图和 2 张标注图；完整手册只读扫描通过，前后聚合哈希一致。
+- 前向测试确认路径未知时会请求用户提供发行版 EXE 并暂停；标书查重无文件和结果时会要求用户先自行完成导入与查重，再次调用 Skill，且本次不修改文件。
+- 个人 Skill 最终包含 7 个必要文件：主说明、界面元数据、2 个参考文件和 3 个 PowerShell 脚本；未添加 README、图标或无关资产。

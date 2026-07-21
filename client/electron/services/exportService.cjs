@@ -1,6 +1,5 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const zlib = require('node:zlib');
 const { fileURLToPath } = require('node:url');
 const { app, dialog, nativeImage } = require('electron');
 const cheerio = require('cheerio');
@@ -8,7 +7,9 @@ const { imageSize } = require('image-size');
 const { compactLogError, createDeveloperLogger, textMetrics } = require('../utils/developerLog.cjs');
 const { getMermaidCacheEntry, saveMermaidCacheImage } = require('../utils/mermaidCache.cjs');
 const { getGeneratedImagesDir, getImportedImagesDir } = require('../utils/paths.cjs');
+const { REMOTE_IMAGE_RETRY_ATTEMPTS, REMOTE_IMAGE_RETRY_DELAY_MS } = require('../utils/remoteImageRetry.cjs');
 const { renderMarkdownHtml } = require('../utils/renderMarkdownHtml.cjs');
+const { getLocalImageRenderService } = require('./localImageRenderService.cjs');
 const {
   AlignmentType,
   BorderStyle,
@@ -38,13 +39,12 @@ const {
 } = require('docx');
 
 const MAX_IMAGE_WIDTH = 520;
+const MAX_IMAGE_HEIGHT_PERCENT = 90;
 const NUMBERING_REFERENCE_PREFIX = 'technical-plan-numbering';
 const HEADING_NUMBERING_REFERENCE = 'technical-plan-heading-numbering';
 const DOCX_TABLE_WIDTH_TWIPS = 9000;
 const CHAPTER_LEAF_TITLE_WIDTH_TWIPS = 1800;
 const CHAPTER_LEAF_CONTENT_WIDTH_TWIPS = DOCX_TABLE_WIDTH_TWIPS - CHAPTER_LEAF_TITLE_WIDTH_TWIPS;
-const MERMAID_EXPORT_RETRY_ATTEMPTS = 2;
-const MERMAID_EXPORT_RETRY_DELAY_MS = 3000;
 const DEFAULT_HEADING_BORDER_CELL_COLORS = ['#e0ecff', '#e9f1ff', '#f2f7ff', '#f8fbff', '#ffffff', '#ffffff'];
 const DEFAULT_TABLE_STYLE = {
   border_width: 1,
@@ -100,18 +100,6 @@ const PAPER_DIMENSIONS_MM = {
 
 function mmToTwips(mm) {
   return Math.round(mm * 56.6929); // 1mm = 1440 twips ÷ 25.4 mm/inch
-}
-
-function encodeMermaidForInk(code) {
-  const state = JSON.stringify({
-    code: String(code || ''),
-    mermaid: { theme: 'default' },
-  });
-  return `pako:${zlib.deflateSync(Buffer.from(state, 'utf-8')).toString('base64url')}`;
-}
-
-function mermaidInkUrl(code) {
-  return `https://mermaid.ink/img/${encodeMermaidForInk(code)}?type=png&bgColor=!white`;
 }
 
 function delay(ms) {
@@ -631,10 +619,26 @@ function getPageContentWidthPx(context) {
   return Math.round(contentWidthTwips / 15);
 }
 
+// 按当前纸张、方向和页边距计算 Word 正文区域可用高度。
+function getPageContentHeightPx(context) {
+  const pageSetup = context?.exportFormat?.page || {};
+  const dims = PAPER_DIMENSIONS_MM[pageSetup.paper_size] || PAPER_DIMENSIONS_MM.a4;
+  const pageHeightMm = pageSetup.orientation === 'landscape' ? dims.width : dims.height;
+  const pageHeightTwips = mmToTwips(pageHeightMm);
+  const marginTopTwips = cmToTwips(pageSetup.margin_top_cm ?? 2);
+  const marginBottomTwips = cmToTwips(pageSetup.margin_bottom_cm ?? 2);
+  const contentHeightTwips = Math.max(1, pageHeightTwips - marginTopTwips - marginBottomTwips);
+  return Math.round(contentHeightTwips / 15);
+}
+
 function getImageMaxWidth(context) {
   const image = getImageStyle(context);
   const percent = Math.max(1, Math.min(100, Number(image.max_width_percent) || DEFAULT_IMAGE_STYLE.max_width_percent));
   return Math.max(1, Math.round(getPageContentWidthPx(context) * percent / 100));
+}
+
+function getImageMaxHeight(context) {
+  return Math.max(1, Math.round(getPageContentHeightPx(context) * MAX_IMAGE_HEIGHT_PERCENT / 100));
 }
 
 function getImageParagraphOptions(context) {
@@ -966,6 +970,11 @@ function formatOutlineNumber(id, headingStyle) {
   const cn = numberToChinese(lastPart);
   const tail = (parts.length >= 3 ? parts.slice(2) : [lastPart]).join('.');
   return String(headingStyle.numbering_template || '')
+    .replace(/\{tail(\d+)\}/g, (_, level) => {
+      const startLevel = Number(level);
+      if (!Number.isFinite(startLevel) || startLevel < 1 || startLevel > 6 || startLevel > parts.length) return '';
+      return parts.slice(startLevel - 1).join('.');
+    })
     .replace(/\{zh\}/g, cn)
     .replace(/\{num\}/g, String(lastPart))
     .replace(/\{tail\}/g, tail)
@@ -1160,16 +1169,48 @@ async function resolveMermaidImageForExport(code, context = {}, options = {}) {
     };
   }
 
-  const loaded = await loadImageWithRetry(mermaidInkUrl(cacheEntry.code), context, options.loadRetry);
-  if (loaded?.buffer?.length) {
+  const retryAttempts = Math.max(0, Number(options.loadRetry?.retryAttempts ?? REMOTE_IMAGE_RETRY_ATTEMPTS) || 0);
+  const retryDelayMs = Math.max(0, Number(options.loadRetry?.retryDelayMs ?? REMOTE_IMAGE_RETRY_DELAY_MS) || 0);
+  let attempt = 0;
+  let lastError = null;
+  let loaded = null;
+
+  while (attempt <= retryAttempts) {
     try {
-      saveMermaidCacheImage(app, cacheEntry.hash, loaded.buffer);
+      const rendered = await getLocalImageRenderService().renderMermaidToPng(cacheEntry.code);
+      if (!rendered?.buffer?.length) {
+        throw new Error('Mermaid 本地转换未生成有效图片');
+      }
+      loaded = {
+        buffer: rendered.buffer,
+        type: 'png',
+        width: rendered.width,
+        height: rendered.height,
+      };
+      lastError = null;
+      break;
     } catch (error) {
-      writeExportLog(context, 'export.mermaid.cache_write_failed', {
-        cache_hash: cacheEntry.hash,
-        error: compactLogError(error),
-      });
+      lastError = error;
+      attempt += 1;
+      if (attempt > retryAttempts) break;
+      if (typeof options.loadRetry?.onRetry === 'function') {
+        options.loadRetry.onRetry(attempt, error);
+      }
+      if (retryDelayMs > 0) await delay(retryDelayMs);
     }
+  }
+
+  if (!loaded?.buffer?.length) {
+    throw lastError || new Error('Mermaid 本地转换失败');
+  }
+
+  try {
+    saveMermaidCacheImage(app, cacheEntry.hash, loaded.buffer);
+  } catch (error) {
+    writeExportLog(context, 'export.mermaid.cache_write_failed', {
+      cache_hash: cacheEntry.hash,
+      error: compactLogError(error),
+    });
   }
 
   return {
@@ -1251,9 +1292,10 @@ async function imageRunFromNode(node, context, options = {}) {
   const sourceWidth = size.width || MAX_IMAGE_WIDTH;
   const sourceHeight = size.height || Math.round(MAX_IMAGE_WIDTH * 0.62);
   const maxWidth = getImageMaxWidth(context);
-  const ratio = Math.min(1, maxWidth / sourceWidth);
-  const width = Math.round(sourceWidth * ratio);
-  const height = Math.round(sourceHeight * ratio);
+  const maxHeight = getImageMaxHeight(context);
+  const ratio = Math.min(1, maxWidth / sourceWidth, maxHeight / sourceHeight);
+  const width = Math.max(1, Math.round(sourceWidth * ratio));
+  const height = Math.max(1, Math.round(sourceHeight * ratio));
   context.imageSuccessCount = (context.imageSuccessCount || 0) + 1;
   writeExportLog(context, 'export.image.completed', {
     image_index: imageIndex,
@@ -1263,6 +1305,8 @@ async function imageRunFromNode(node, context, options = {}) {
     source_width: sourceWidth,
     source_height: sourceHeight,
     max_width: maxWidth,
+    max_height: maxHeight,
+    scale_ratio: ratio,
     output_width: width,
     output_height: height,
   });
@@ -1430,7 +1474,10 @@ async function htmlTableToDocx($, tableNode, context) {
 
 function buildListParagraphOptions(context, reference, level, itemIndex, totalItems, options = {}) {
   const paragraphOptions = reference ? { numbering: { reference, level } } : {};
-  if (!reference && options.manualIndent) {
+  if (!reference && options.manualListIndent) {
+    const indent = getManualUnorderedListLevelIndent(context, level);
+    if (indent) paragraphOptions.indent = indent;
+  } else if (!reference && options.manualIndent) {
     const indent = getTaskListLevelIndent(context, level);
     if (indent) paragraphOptions.indent = indent;
   }
@@ -1464,6 +1511,7 @@ function isTaskListItem($, itemNode, inlineNodes = []) {
 async function htmlListToDocx($, listNode, context, options = {}) {
   const blocks = [];
   const ordered = htmlTagName(listNode) === 'ol';
+  const unorderedListWithoutMarker = !ordered && context.bodyListStyle === 'none';
   let numberingReference = null;
   const listItems = $(listNode).children('li').toArray();
 
@@ -1472,7 +1520,7 @@ async function htmlListToDocx($, listNode, context, options = {}) {
       .filter((child) => !['ul', 'ol'].includes(htmlTagName(child)))
       .filter((child) => !isWhitespaceHtmlTextNode(child));
     const isTaskItem = isTaskListItem($, itemNode, inlineNodes);
-    if (!isTaskItem && numberingReference == null) {
+    if (!isTaskItem && numberingReference == null && !unorderedListWithoutMarker) {
       numberingReference = ordered ? createOrderedListReference(context) : createUnorderedListReference(context);
     }
     const listOptions = buildListParagraphOptions(
@@ -1481,7 +1529,7 @@ async function htmlListToDocx($, listNode, context, options = {}) {
       Math.min(options.listLevel || 0, 2),
       itemIndex,
       listItems.length,
-      { manualIndent: isTaskItem },
+      { manualIndent: isTaskItem, manualListIndent: !isTaskItem && unorderedListWithoutMarker },
     );
     blocks.push(paragraph(await htmlInlineRuns($, inlineNodes, context), listOptions));
 
@@ -1510,26 +1558,28 @@ async function mermaidCodeToDocxBlocks(code, context) {
 
   const nextIndex = (context.convertedMermaidCount || 0) + 1;
   const total = context.stats?.mermaidCount || nextIndex;
-  const cacheEntry = getMermaidCacheEntry(app, value);
-  writeExportLog(context, 'export.mermaid.started', {
-    mermaid_index: nextIndex,
-    total,
-    cache_hash: cacheEntry.hash,
-    cache_hit: cacheEntry.exists,
-    code_metrics: textMetrics(value),
-  });
-  reportConversionProgress(context, cacheEntry.exists
-    ? `Mermaid 图 ${nextIndex}/${total} 已命中本地缓存。`
-    : `正在转换 Mermaid 图 ${nextIndex}/${total}，可能需要联网等待。`);
-  const loadRetry = {
-    retryAttempts: MERMAID_EXPORT_RETRY_ATTEMPTS,
-    retryDelayMs: MERMAID_EXPORT_RETRY_DELAY_MS,
-    onRetry: (attempt) => {
-      reportConversionProgress(context, `Mermaid 图 ${nextIndex}/${total} 转换失败，3 秒后第 ${attempt} 次重试。`);
-    },
-  };
+  let cacheEntry = null;
 
   try {
+    // 导出阶段不拦截语法：正文已有代码块则直接尝试本地渲染。
+    cacheEntry = getMermaidCacheEntry(app, value);
+    writeExportLog(context, 'export.mermaid.started', {
+      mermaid_index: nextIndex,
+      total,
+      cache_hash: cacheEntry.hash,
+      cache_hit: cacheEntry.exists,
+      code_metrics: textMetrics(value),
+    });
+    reportConversionProgress(context, cacheEntry.exists
+      ? `Mermaid 图 ${nextIndex}/${total} 已命中本地缓存。`
+      : `正在本地转换 Mermaid 图 ${nextIndex}/${total}。`);
+    const loadRetry = {
+      retryAttempts: REMOTE_IMAGE_RETRY_ATTEMPTS,
+      retryDelayMs: REMOTE_IMAGE_RETRY_DELAY_MS,
+      onRetry: (attempt) => {
+        reportConversionProgress(context, `Mermaid 图 ${nextIndex}/${total} 转换失败，3 秒后第 ${attempt} 次重试。`);
+      },
+    };
     const mermaidImage = await resolveMermaidImageForExport(value, context, { cacheEntry, loadRetry });
     const block = mermaidImage.loaded === undefined
       ? await imageParagraphFromSource(mermaidImage.source, 'Mermaid 图', context)
@@ -1550,7 +1600,7 @@ async function mermaidCodeToDocxBlocks(code, context) {
     writeExportLog(context, 'export.mermaid.error', {
       mermaid_index: nextIndex,
       total,
-      cache_hash: cacheEntry.hash,
+      cache_hash: cacheEntry?.hash || '',
       error: compactLogError(error),
     });
     reportConversionProgress(context, `Mermaid 图 ${nextIndex}/${total} 转换失败。`);
@@ -1837,6 +1887,13 @@ function getTaskListLevelIndent(context, level) {
   if (safeLevel <= 0) return null;
   const listIndentChars = typeof bodyStyle.list_indent_chars === 'number' ? bodyStyle.list_indent_chars : 2;
   return { left: Math.round(charsToTwips(listIndentChars, context.bodyRunSize || 24) * safeLevel) };
+}
+
+function getManualUnorderedListLevelIndent(context, level) {
+  const safeLevel = Math.max(0, Math.min(Number(level) || 0, 2));
+  const listIndentChars = typeof context.bodyListIndentChars === 'number' ? context.bodyListIndentChars : 2;
+  const left = Math.round(charsToTwips(listIndentChars, context.bodyRunSize || 24) * (safeLevel + 1));
+  return left > 0 ? { left } : null;
 }
 
 function getListLevelIndent(referenceConfig, level) {

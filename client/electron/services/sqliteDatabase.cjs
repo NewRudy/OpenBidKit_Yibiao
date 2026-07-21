@@ -3,7 +3,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const { getWorkspaceDatabasePath } = require('../utils/paths.cjs');
 
-const schemaVersion = 16;
+const schemaVersion = 19;
 
 function createInitialSchema(db) {
   db.exec(`
@@ -17,6 +17,7 @@ function createInitialSchema(db) {
       tender_markdown_chars INTEGER NOT NULL DEFAULT 0,
       tender_parser_label TEXT,
       tender_imported_at TEXT,
+      tender_files_json TEXT,
       tender_original_markdown_path TEXT,
       tender_original_markdown_hash TEXT,
       tender_original_markdown_chars INTEGER NOT NULL DEFAULT 0,
@@ -46,10 +47,13 @@ function createInitialSchema(db) {
       bid_section_extraction_error TEXT,
       outline_mode TEXT NOT NULL DEFAULT 'aligned',
       outline_expansion_mode TEXT NOT NULL DEFAULT 'ai-complement',
+      outline_word_control_options_json TEXT,
+      outline_word_control_snapshot_json TEXT,
       outline_project_name TEXT,
       outline_project_overview TEXT,
       content_generation_options_json TEXT,
       content_generation_runtime_json TEXT,
+      content_illustration_plan_json TEXT,
       selected_section_id TEXT,
       selected_section_title TEXT,
       selected_section_head_line TEXT,
@@ -127,7 +131,6 @@ function createInitialSchema(db) {
     CREATE TABLE IF NOT EXISTS technical_plan_content_plans (
       node_id TEXT PRIMARY KEY,
       plan_json TEXT NOT NULL,
-      illustration_type TEXT NOT NULL DEFAULT 'none',
       updated_at TEXT NOT NULL,
       FOREIGN KEY (node_id) REFERENCES technical_plan_outline_nodes(node_id) ON DELETE CASCADE
     );
@@ -239,6 +242,21 @@ function addTechnicalPlanBidSectionOptimization(db) {
   addColumnIfMissing(db, 'technical_plan_meta', 'bid_section_extraction_error', 'TEXT');
 }
 
+function addTechnicalPlanTenderFiles(db) {
+  addColumnIfMissing(db, 'technical_plan_meta', 'tender_files_json', 'TEXT');
+}
+
+function addTechnicalPlanIllustrationPlan(db) {
+  addColumnIfMissing(db, 'technical_plan_meta', 'content_illustration_plan_json', 'TEXT');
+  removeLegacyTechnicalPlanIllustrationType(db);
+}
+
+// 为 Step03 当前设置和目录生效快照分别增加存储字段。
+function addTechnicalPlanOutlineWordControl(db) {
+  addColumnIfMissing(db, 'technical_plan_meta', 'outline_word_control_options_json', 'TEXT');
+  addColumnIfMissing(db, 'technical_plan_meta', 'outline_word_control_snapshot_json', 'TEXT');
+}
+
 function addTechnicalPlanCustomOutline(db) {
   addColumnIfMissing(db, 'technical_plan_meta', 'custom_outline_file_name', 'TEXT');
   addColumnIfMissing(db, 'technical_plan_meta', 'custom_outline_markdown_path', 'TEXT');
@@ -246,6 +264,13 @@ function addTechnicalPlanCustomOutline(db) {
   addColumnIfMissing(db, 'technical_plan_meta', 'custom_outline_markdown_chars', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing(db, 'technical_plan_meta', 'custom_outline_parser_label', 'TEXT');
   addColumnIfMissing(db, 'technical_plan_meta', 'custom_outline_imported_at', 'TEXT');
+}
+
+function removeLegacyTechnicalPlanIllustrationType(db) {
+  const columns = getExistingColumns(db, 'technical_plan_content_plans');
+  if (columns.has('illustration_type')) {
+    db.exec('ALTER TABLE technical_plan_content_plans DROP COLUMN illustration_type');
+  }
 }
 
 function addKnowledgeDocumentSortOrder(db) {
@@ -1093,6 +1118,28 @@ const schemaHealthColumnGroups = [
     version: 16,
     table: 'technical_plan_meta',
     columns: {
+      tender_files_json: 'TEXT',
+    },
+  },
+  {
+    version: 17,
+    table: 'technical_plan_meta',
+    columns: {
+      content_illustration_plan_json: 'TEXT',
+    },
+  },
+  {
+    version: 18,
+    table: 'technical_plan_meta',
+    columns: {
+      outline_word_control_options_json: 'TEXT',
+      outline_word_control_snapshot_json: 'TEXT',
+    },
+  },
+  {
+    version: 19,
+    table: 'technical_plan_meta',
+    columns: {
       custom_outline_file_name: 'TEXT',
       custom_outline_markdown_path: 'TEXT',
       custom_outline_markdown_hash: 'TEXT',
@@ -1158,6 +1205,9 @@ function ensureWorkspaceSchemaHealth(db, targetVersion = schemaVersion, onStatus
       db.exec(`ALTER TABLE ${quoteIdentifier(group.table)} ADD COLUMN ${quoteIdentifier(columnName)} ${columnType}`);
       existingColumns.add(columnName);
     }
+  }
+  if (targetVersion >= 17 && existingTables.has('technical_plan_content_plans')) {
+    removeLegacyTechnicalPlanIllustrationType(db);
   }
 }
 
@@ -1239,6 +1289,21 @@ const migrations = [
   },
   {
     version: 16,
+    description: '技术方案支持多份招标文件',
+    up: addTechnicalPlanTenderFiles,
+  },
+  {
+    version: 17,
+    description: '技术方案新增全文图片编排结果',
+    up: addTechnicalPlanIllustrationPlan,
+  },
+  {
+    version: 18,
+    description: '技术方案新增目录字数控制设置和生效快照',
+    up: addTechnicalPlanOutlineWordControl,
+  },
+  {
+    version: 19,
     description: '技术方案新增自有大纲文件状态',
     up: addTechnicalPlanCustomOutline,
   },

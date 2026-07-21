@@ -30,7 +30,7 @@
 - Renderer 只用 `localStorage` 存轻量 UI 偏好；大文本、草稿、API Key、流程状态都走 Main 侧存储/IPC。
 - 技术方案 Step01 只导入/展示 Markdown；Step02/Step03/Step04 的耗时任务都在 Electron Main 后台任务中跑，并持续写入 `workspaceStore`。
 - 正文展示和导出以 `outlineData.outline[*].content` 为权威来源；目录重新生成、编辑、添加或删除后必须清空旧正文内容和生成缓存。
-- Mermaid 图以 Markdown `mermaid` 代码块保存；Renderer 本地渲染预览，Word 导出由 Main 转图片并通过 `window.yibiao.export.onWordExportProgress()` 报进度。
+- Mermaid 图以 Markdown `mermaid` 代码块保存；Renderer 本地渲染预览，Word 导出由 Main 本地转图片（不依赖外网）并通过 `window.yibiao.export.onWordExportProgress()` 报进度。
 - AI 生成 Markdown 默认不启用 `rehypeRaw`；只有明确需要渲染可信 HTML 时才局部开启并说明原因。
 
 ## 聚焦验证
@@ -51,10 +51,11 @@
 - 不把 `ACCOUNT_ID`、`ADMIN_TOKEN`、`ANALYTICS_API_TOKEN` 等密钥写入仓库；Worker 配置保留 `keep_vars: true`，不要在 `wrangler.jsonc` 增加 `secrets.required`。
 - 禁止删除、绕过或弱化任何埋点、统计、Analytics Dashboard 展示和 Worker 聚合逻辑；如确需调整，必须等价保留统计能力并说明影响。
 
-## 开发规范
+## 必须遵守的要求
 - 尽量保持整体编码风格的统一。
 - 前端组件和样式尽量封装和复用，保持样式风格统一。
 - 当用户提出功能异常时，不要猜原因，而是真实的去排查代码，增加调试日志，精准定位问题再去想办法解决。
 - 任何好的想法，应该在设计阶段，即Plan模式下提出，如果进入到build阶段，只按照原定方案执行，禁止增加任何多余内容，如需增加需要向用户确认。
 - 这是一个开源客户端项目，前端后端等所有数据传输层都在用户本地客户端上，所以所有数据传输直接都是相互信任的，不要加多余的数据校验，如果需要任何校验，只在用户输入层进行校验，进入软件传输之后，任何层级间不用校验。
 - 这是一个开源客户端项目，前端后端等所有数据传输层都在用户本地客户端上，我们默认客户不会自己攻击自己，不会恶意使用程序，所以不需要加过多安全性兜底
+- 严格遵守用户命令，你有任何好的想法都应该在plan阶段跟用户确认，而不是在build阶段自行添加

@@ -15,6 +15,15 @@
    <a href="https://linux.do/" rel="nofollow">
   <img src="https://camo.githubusercontent.com/1c3b7d159a0bd69f89a8147a3d875d8d6431c97c172e52bac05fda35ae7370c3/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f4c494e55582d2d444f2d436f6d6d756e6974792d626c75652e7376673f6c6f676f3d64617461253341696d616765253246737667253242786d6c25334262617365363425324350484e325a79423361575230614430694d5449774969426f5a576c6e61485139496a45794d434967646d6c6c64304a76654430694d434177494445794d4341784d6a4169494868746247357a50534a6f644852774f693876643364334c6e637a4c6d39795a7938794d4441774c334e325a794925324250474e73615842515958526f49476c6b50534a68496a343859326c795932786c49474e34505349324d43496759336b39496a597749694279505349304e794976506a7776593278706346426864476725324250474e70636d4e735a53426d615778735053496a5a6a426d4d4759774969426a654430694e6a416949474e35505349324d434967636a30694e5441694c7a3438636d566a6443426d615778735053496a4d574d78597a466c4969426a62476c774c58426864476739496e56796243676a59536b6949486739496a457749694235505349784d43496764326c6b64476739496a45774d434967614756705a3268305053497a4d434976506a78795a574e3049475a706247773949694e6d4d4759775a6a416949474e7361584174634746306144306964584a734b434e684b534967654430694d54416949486b39496a51774969423361575230614430694d5441774969426f5a576c6e61485139496a517749693825324250484a6c593351675a6d6c736244306949325a6d596a41774d79496759327870634331775958526f50534a31636d776f4932457049694234505349784d434967655430694f444169494864705a48526f505349784d4441694947686c6157646f644430694d7a41694c7a34384c334e325a7a34253344267374796c653d666c6174" alt="友链 linux.do" data-canonical-src="https://img.shields.io/badge/LINUX--DO-Community-blue.svg?logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTIwIiBoZWlnaHQ9IjEyMCIgdmlld0JveD0iMCAwIDEyMCAxMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI%2BPGNsaXBQYXRoIGlkPSJhIj48Y2lyY2xlIGN4PSI2MCIgY3k9IjYwIiByPSI0NyIvPjwvY2xpcFBhdGg%2BPGNpcmNsZSBmaWxsPSIjZjBmMGYwIiBjeD0iNjAiIGN5PSI2MCIgcj0iNTAiLz48cmVjdCBmaWxsPSIjMWMxYzFlIiBjbGlwLXBhdGg9InVybCgjYSkiIHg9IjEwIiB5PSIxMCIgd2lkdGg9IjEwMCIgaGVpZ2h0PSIzMCIvPjxyZWN0IGZpbGw9IiNmMGYwZjAiIGNsaXAtcGF0aD0idXJsKCNhKSIgeD0iMTAiIHk9IjQwIiB3aWR0aD0iMTAwIiBoZWlnaHQ9IjQwIi8%2BPHJlY3QgZmlsbD0iI2ZmYjAwMyIgY2xpcC1wYXRoPSJ1cmwoI2EpIiB4PSIxMCIgeT0iODAiIHdpZHRoPSIxMDAiIGhlaWdodD0iMzAiLz48L3N2Zz4%3D&amp;style=flat" style="max-width: 100%;">
   </a>
+  <a href="https://afdian.com/a/markup" rel="nofollow">
+    <img src="https://img.shields.io/badge/Afdian-Support%20the%20Project-F96854.svg" alt="Support the project on Afdian">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://trendshift.io/repositories/45446?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-45446" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/45446" alt="FB208%2FOpenBidKit_Yibiao | Trendshift" width="250" height="55"></a>
+  <a href="https://trendshift.io/repositories/45446?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-45446" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/45446/daily?language=JavaScript&amp;v=20260720" alt="FB208%2FOpenBidKit_Yibiao | Trendshift" width="250" height="55"></a>
+  <a href="https://trendshift.io/repositories/45446?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-45446" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/45446/weekly?language=JavaScript" alt="FB208%2FOpenBidKit_Yibiao | Trendshift" width="250" height="55"></a>
 </p>
 
 <p align="left">
@@ -22,7 +31,7 @@
   <br>
   Yibiao Bid Toolbox is an intelligent bid document creation tool for tendering and bidding scenarios. It is fully open source and includes AI-generated technical proposals, image-and-text generation, commercial bid support, enterprise knowledge base management, duplicate checking, rejection-risk checks, tender information, and more features under development.
   <br>
-  It supports all OpenAI-like AI APIs. GPT, DeepSeek, LongCat, and Volcano Ark are deeply adapted, and local models can also be connected through Ollama, LM Studio, and similar tools.
+  It supports all OpenAI-like AI APIs. GPT, DeepSeek, and Volcano Ark are deeply adapted, and local models can also be connected through Ollama, LM Studio, and similar tools.
   <br>
   <br>
   <strong>❓ What problem does it solve?</strong>
@@ -33,6 +42,10 @@
 ## 🌐 Official Website
 
 **Online Experience**: [https://yibiao.pro](https://yibiao.pro)  [Get more product information, online demos, and technical support.]
+
+## 💖 Support the Project
+
+If this project helps you, you can support ongoing maintenance and open-source development on [Afdian](https://afdian.com/a/markup).
 
 <h2 align="center">✨ Features & Advantages</h2>
 
@@ -77,7 +90,7 @@
     </td>
     <td width="33%" valign="top">
       <strong>⚙️ Custom AI Configuration</strong><br>
-      Configure text models, image models, and file parsing providers to fit your team's preferred stack.
+      Configure text models, image models, file parsing providers, and switch between OpenCode Agent and Pi Agent.
     </td>
     <td width="33%" valign="top">
       <strong>✏️ Editable Workflow</strong><br>
@@ -104,7 +117,7 @@ Download the latest release from [GitHub Releases](https://github.com/yibiaoai/y
 
 There is no root-level `package.json` in this repository. The desktop client lives under `client/`, so all client development commands must be run from the `client/` directory.
 
-Before debugging OpenCode Agent locally, prepare the OpenCode binary for your current platform. Otherwise the developer test page will fail with `OpenCode binary 不存在`.
+The client includes both OpenCode Agent and Pi Agent runtimes. OpenCode is the default and can be changed under Settings - Agent Configuration. Pi Agent is installed by `npm ci`; before debugging OpenCode Agent locally, prepare the OpenCode binary for your current platform. Otherwise the agent test page will fail with `OpenCode binary 不存在`.
 
 Windows x64:
 
@@ -161,6 +174,7 @@ The current product is an independent desktop client under `client/`. It does no
 - **Desktop**: Electron Main / Preload provides local file access, configuration, export, and background task capabilities.
 - **Renderer**: Vite + React + TypeScript, with global CSS and Radix UI primitives.
 - **Features**: Technical proposal, knowledge base, duplicate-check workspace, rejection-risk checklist workspace, and settings.
+- **Agent Runtimes**: OpenCode Agent and Pi Agent share the text-model configuration, AI proxy, command tools, and one global serial queue.
 - **Local Data**: Configuration, workspace data, and generated caches are stored under Electron `userData`.
 - **Packaging**: Built for Windows / macOS with electron-builder.
 
@@ -190,15 +204,6 @@ Contributions are welcome.
 3. **🔧 Code Contributions**: Fork the repository and submit a pull request.
 4. **📖 Documentation**: Help improve documentation and usage guides.
 
-## 📢 Statement
-
-Recently, we have received many issue-based attacks that baselessly smear and attack this repository. I hereby state:
-
-1. I will not stop open-sourcing this project. Never!
-2. Even if it becomes commercialized in the future, I will follow excellent open-source projects such as Excalidraw and NocoDB, and only charge for B2B services such as project management, cloud storage, team collaboration, and enterprise services. I give my personal word that the basic features for personal use will remain open source and free forever, and the generation quality will strive to match paid software.
-
-<img src="./screenshots/issue_claim.png" alt="Yibiao issue statement" width="100%">
-
 ## 🍉 Acknowledgements
 
 - Thanks to all users for your support and trust.
@@ -213,7 +218,7 @@ People who provide requirement analysis, technical support, test files, useful f
     <td width="20%" valign="top">
 
 ![](https://oss.agnet.top/keep/2026/06/23/20260623104254982.png)
-<p align="center">Yunfeng</p>
+<p align="center">云峰</p>
     </td>
     <td width="20%" valign="top">
 
@@ -223,7 +228,7 @@ People who provide requirement analysis, technical support, test files, useful f
     <td width="20%" valign="top">
 
 ![](https://oss.agnet.top/keep/2026/06/23/20260623104455361.png)
-<p align="center">Professional Proposal</p>
+<p align="center">专业标书</p>
     </td>
     <td width="20%" valign="top">
 
@@ -233,18 +238,24 @@ People who provide requirement analysis, technical support, test files, useful f
     <td width="20%" valign="top">
 
 ![](https://oss.agnet.top/keep/2026/06/23/20260623104533722.png)
-<p align="center">Xiaomailang's Summer</p>
+<p align="center">小麦浪的夏天</p>
     </td>
   </tr>
   <tr>
     <td width="20%" valign="top">
 
 ![](https://oss.agnet.top/keep/2026/06/23/20260623105024436.png)
-<p align="center">Hanfeng (Petrochemical Installation Training)</p>
+<p align="center">韩枫（石化安装培训）</p>
     </td>
     <td width="20%" valign="top">
+    
+![](https://oss.agnet.top/keep/2026/07/07/20260707150136733.png)
+<p align="center">﹏陌路°天涯</p>
     </td>
     <td width="20%" valign="top">
+    
+![](https://oss.agnet.top/keep/2026/07/08/20260708171203734.png)
+<p align="center">刘梦</p>
     </td>
     <td width="20%" valign="top">
     </td>
@@ -282,9 +293,9 @@ You may use, modify, distribute, and commercialize this project, but modified ve
 
 <a href="https://www.star-history.com/?repos=FB208%2FOpenBidKit_Yibiao&type=timeline&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=FB208/OpenBidKit_Yibiao&type=timeline&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=FB208/OpenBidKit_Yibiao&type=timeline&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=FB208/OpenBidKit_Yibiao&type=timeline&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="assets/star-history/star-history-dark.svg" />
+   <source media="(prefers-color-scheme: light)" srcset="assets/star-history/star-history-light.svg" />
+   <img alt="Star History Chart" src="assets/star-history/star-history-light.svg" />
  </picture>
 </a>
 

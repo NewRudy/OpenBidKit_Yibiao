@@ -1,11 +1,12 @@
 import * as Dialog from '@radix-ui/react-dialog';
+import * as Switch from '@radix-ui/react-switch';
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, DragEvent } from 'react';
 import { trackConfigUsage } from '../../../shared/analytics/analytics';
 import { useToast } from '../../../shared/ui';
 import type { BackgroundTaskState, SaveOutlineRequest, TechnicalPlanCustomOutlineFile, TechnicalPlanState, TechnicalPlanWorkflowKind } from '../types';
 import type { KnowledgeBaseIndex, KnowledgeDocument } from '../../knowledge-base/types';
-import type { OutlineData, OutlineExpansionMode, OutlineItem } from '../../../shared/types';
+import type { OutlineData, OutlineExpansionMode, OutlineItem, OutlineWordControlOptions } from '../../../shared/types';
 import type { ExportFormatConfig } from '../../../shared/types/exportFormat';
 import { DEFAULT_EXPORT_FORMAT } from '../../../shared/types/exportFormat';
 import { formatOutlineTitle } from '../../../shared/utils/outlineNumbering';
@@ -16,11 +17,13 @@ interface OutlineEditPageProps {
   techRequirements: string;
   outlineExpansionMode: OutlineExpansionMode;
   customOutlineFile: TechnicalPlanCustomOutlineFile | null;
+  outlineWordControlOptions: OutlineWordControlOptions;
+  outlineWordControlSnapshot?: OutlineWordControlOptions;
   referenceKnowledgeDocumentIds: string[];
   outlineData: OutlineData | null;
   task?: BackgroundTaskState;
   contentTaskStatus?: BackgroundTaskState['status'];
-  onOutlineConfigChange: (config: { referenceKnowledgeDocumentIds: string[]; outlineExpansionMode: OutlineExpansionMode }) => void;
+  onOutlineConfigChange: (config: { referenceKnowledgeDocumentIds: string[]; outlineExpansionMode: OutlineExpansionMode; wordControlOptions: OutlineWordControlOptions }) => Promise<void>;
   onCustomOutlineImported: (state: TechnicalPlanState) => void;
   onOutlineSaved: (request: SaveOutlineRequest) => Promise<void>;
   onSortGuardChange?: (guard: OutlineSortGuard | null) => void;
@@ -68,24 +71,79 @@ const outlineExpansionModeOptions: Array<{ value: OutlineExpansionMode; title: s
     description: '保留原方案一级目录，在其基础上补充招标评分项缺口，并可继续使用知识库增强。',
   },
 ];
-const customOutlineModeLabels: Record<CustomOutlineGenerationMode, string> = {
-  none: '招标要求优先',
-  'custom-complement': '自有大纲优先',
-};
 const customOutlineModeOptions: Array<{ value: CustomOutlineGenerationMode; title: string; description: string; requiresFile: boolean }> = [
   {
     value: 'none',
-    title: customOutlineModeLabels.none,
+    title: '招标要求优先',
     description: '不使用自有大纲，按招标评分要求重新规划目录。',
     requiresFile: false,
   },
   {
     value: 'custom-complement',
-    title: customOutlineModeLabels['custom-complement'],
-    description: '保留你上传大纲的一级目录骨架，再补齐招标评分项和下级响应目录。',
+    title: '自有大纲优先',
+    description: '保留上传大纲的一级目录骨架，再补齐招标评分项和下级响应目录。',
     requiresFile: true,
   },
 ];
+
+function parseWordCountDraft(value: string) {
+  if (!value) return 0;
+  if (!/^\d+$/.test(value)) return null;
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 ? number : null;
+}
+
+function normalizeWordControlDraft(values: {
+  enabled: boolean;
+  minimumWords: string;
+  maximumWords: string;
+  sectionWords: string;
+  strictSectionWords: boolean;
+}) {
+  const minimumWords = parseWordCountDraft(values.minimumWords);
+  const maximumWords = parseWordCountDraft(values.maximumWords);
+  const sectionWords = parseWordCountDraft(values.sectionWords);
+  if (minimumWords === null || maximumWords === null || sectionWords === null) {
+    throw new Error('字数设置只允许填写非负整数');
+  }
+  const options: OutlineWordControlOptions = {
+    enabled: values.enabled,
+    minimumWords,
+    maximumWords,
+    sectionWords,
+    strictSectionWords: sectionWords > 0 && values.strictSectionWords,
+  };
+  if (!options.enabled) return options;
+  if (minimumWords > 0 && maximumWords > 0 && maximumWords < minimumWords) {
+    throw new Error('最多字数不能低于最少字数');
+  }
+  const effectiveSectionWords = sectionWords > 0 ? sectionWords : 3000;
+  const minimumLeafCount = minimumWords > 0 ? Math.ceil(minimumWords / effectiveSectionWords) : null;
+  const maximumLeafCount = maximumWords > 0 ? Math.floor(maximumWords / effectiveSectionWords) : null;
+  if (maximumLeafCount !== null && maximumLeafCount < 1) {
+    throw new Error('当前最多字数无法形成有效叶子节点范围，请调整最多字数或每小节字数');
+  }
+  if (minimumLeafCount !== null && maximumLeafCount !== null && minimumLeafCount > maximumLeafCount) {
+    throw new Error('当前设置无法形成有效叶子节点范围，请调整最少字数、最多字数或每小节字数');
+  }
+  return options;
+}
+
+function getEstimatedPages(minimumWords: number, maximumWords: number) {
+  const baseWords = minimumWords > 0 && maximumWords > 0
+    ? (minimumWords + maximumWords) / 2
+    : minimumWords || maximumWords;
+  return baseWords > 0 ? Math.ceil(baseWords / 650) : null;
+}
+
+function areWordControlOptionsEqual(left?: OutlineWordControlOptions, right?: OutlineWordControlOptions) {
+  return Boolean(left && right
+    && left.enabled === right.enabled
+    && left.minimumWords === right.minimumWords
+    && left.maximumWords === right.maximumWords
+    && left.sectionWords === right.sectionWords
+    && left.strictSectionWords === right.strictSectionWords);
+}
 
 function collectOutlineIds(items: OutlineItem[], ids = new Set<string>()) {
   items.forEach((item) => {
@@ -244,6 +302,8 @@ function OutlineEditPage({
   techRequirements,
   outlineExpansionMode,
   customOutlineFile,
+  outlineWordControlOptions,
+  outlineWordControlSnapshot,
   referenceKnowledgeDocumentIds,
   outlineData,
   task,
@@ -266,6 +326,14 @@ function OutlineEditPage({
   const [importingCustomOutline, setImportingCustomOutline] = useState(false);
   const [cancelingOutline, setCancelingOutline] = useState(false);
   const [draftKnowledgeDocumentIds, setDraftKnowledgeDocumentIds] = useState<string[]>(referenceKnowledgeDocumentIds);
+  const [draftWordControlEnabled, setDraftWordControlEnabled] = useState(outlineWordControlOptions.enabled);
+  const [draftMinimumWords, setDraftMinimumWords] = useState(String(outlineWordControlOptions.minimumWords));
+  const [draftMaximumWords, setDraftMaximumWords] = useState(String(outlineWordControlOptions.maximumWords));
+  const [draftSectionWords, setDraftSectionWords] = useState(String(outlineWordControlOptions.sectionWords));
+  const [draftStrictSectionWords, setDraftStrictSectionWords] = useState(outlineWordControlOptions.strictSectionWords);
+  const [savingOutlineConfig, setSavingOutlineConfig] = useState(false);
+  const [developerMode, setDeveloperMode] = useState(false);
+  const [draftForceOutlineAgentRepair, setDraftForceOutlineAgentRepair] = useState(false);
   const [knowledgeSearch, setKnowledgeSearch] = useState('');
   const [expandedKnowledgeFolderIds, setExpandedKnowledgeFolderIds] = useState<Set<string>>(new Set());
   const [knowledgeIndex, setKnowledgeIndex] = useState<KnowledgeBaseIndex>(emptyKnowledgeIndex);
@@ -308,11 +376,36 @@ function OutlineEditPage({
   const effectiveStartedAt = Number.isFinite(startedAt) ? startedAt : localStartAt;
   const elapsedText = generating && effectiveStartedAt ? `已运行 ${formatDuration(nowTick - effectiveStartedAt)}` : '';
   const staleText = generating && Number.isFinite(updatedAt) ? `最近更新 ${Math.floor(Math.max(0, nowTick - updatedAt) / 1000)} 秒前` : '';
+  const parsedDraftMinimumWords = parseWordCountDraft(draftMinimumWords) ?? 0;
+  const parsedDraftMaximumWords = parseWordCountDraft(draftMaximumWords) ?? 0;
+  const parsedDraftSectionWords = parseWordCountDraft(draftSectionWords) ?? 0;
+  const estimatedPages = draftWordControlEnabled ? getEstimatedPages(parsedDraftMinimumWords, parsedDraftMaximumWords) : null;
+  const normalizedDraftOptions: OutlineWordControlOptions = {
+    enabled: draftWordControlEnabled,
+    minimumWords: parsedDraftMinimumWords,
+    maximumWords: parsedDraftMaximumWords,
+    sectionWords: parsedDraftSectionWords,
+    strictSectionWords: parsedDraftSectionWords > 0 && draftStrictSectionWords,
+  };
+  const configurationRequiresRegeneration = Boolean(outlineData && !areWordControlOptionsEqual(normalizedDraftOptions, outlineWordControlSnapshot));
+
+  const initializeWordControlDraft = () => {
+    setDraftWordControlEnabled(outlineWordControlOptions.enabled);
+    setDraftMinimumWords(String(outlineWordControlOptions.minimumWords));
+    setDraftMaximumWords(String(outlineWordControlOptions.maximumWords));
+    setDraftSectionWords(String(outlineWordControlOptions.sectionWords));
+    setDraftStrictSectionWords(outlineWordControlOptions.strictSectionWords);
+  };
 
   useEffect(() => {
     let cancelled = false;
     window.yibiao?.config.load().then((cfg) => {
-      if (!cancelled && cfg?.export_format) {
+      if (cancelled) return;
+      setDeveloperMode(Boolean(cfg?.developer_mode));
+      if (!cfg?.developer_mode) {
+        setDraftForceOutlineAgentRepair(false);
+      }
+      if (cfg?.export_format) {
         setExportFormat(cfg.export_format);
       }
     }).catch(() => {});
@@ -367,9 +460,11 @@ function OutlineEditPage({
     setDraftOutlineExpansionMode(isExpansionWorkflow ? outlineExpansionMode : 'ai-complement');
     setDraftCustomOutlineMode(!isExpansionWorkflow && customOutlineFile ? 'custom-complement' : 'none');
     setDraftKnowledgeDocumentIds(referenceKnowledgeDocumentIds);
+    initializeWordControlDraft();
+    setDraftForceOutlineAgentRepair(false);
     setKnowledgeSearch('');
     void loadKnowledgeIndex();
-  }, [generationDialogOpen, isExpansionWorkflow, outlineExpansionMode, customOutlineFile, referenceKnowledgeDocumentIds]);
+  }, [generationDialogOpen, isExpansionWorkflow, outlineExpansionMode, outlineWordControlOptions, customOutlineFile, referenceKnowledgeDocumentIds]);
 
   const loadKnowledgeIndex = async () => {
     try {
@@ -404,15 +499,13 @@ function OutlineEditPage({
     setDraftOutlineExpansionMode(isExpansionWorkflow ? outlineExpansionMode : 'ai-complement');
     setDraftCustomOutlineMode(!isExpansionWorkflow && customOutlineFile ? 'custom-complement' : 'none');
     setDraftKnowledgeDocumentIds(referenceKnowledgeDocumentIds);
+    initializeWordControlDraft();
     setKnowledgeSearch('');
     setGenerationDialogOpen(true);
   };
 
   const importCustomOutlineDocument = async () => {
-    if (generating || importingCustomOutline) {
-      return;
-    }
-
+    if (generating || importingCustomOutline) return;
     try {
       setImportingCustomOutline(true);
       const result = await window.yibiao?.technicalPlan.importCustomOutlineDocument();
@@ -420,10 +513,7 @@ function OutlineEditPage({
         showToast(result?.message || '未导入自有大纲', result?.message === '已取消选择' ? 'info' : 'error');
         return;
       }
-      if (!result.state) {
-        showToast('自有大纲解析结果为空', 'error');
-        return;
-      }
+      if (!result.state) throw new Error('自有大纲解析结果为空');
       onCustomOutlineImported(result.state);
       setDraftCustomOutlineMode('custom-complement');
       showToast(result.message || '自有大纲已导入', 'success');
@@ -434,13 +524,39 @@ function OutlineEditPage({
     }
   };
 
-  const saveOutlineConfig = () => {
-    onOutlineConfigChange({
-      referenceKnowledgeDocumentIds: draftKnowledgeDocumentIds,
-      outlineExpansionMode: isExpansionWorkflow ? draftOutlineExpansionMode : 'ai-complement',
-    });
-    setGenerationDialogOpen(false);
-    showToast('目录生成配置已保存', 'success');
+  const getNormalizedWordControlOptions = () => normalizeWordControlDraft({
+    enabled: draftWordControlEnabled,
+    minimumWords: draftMinimumWords,
+    maximumWords: draftMaximumWords,
+    sectionWords: draftSectionWords,
+    strictSectionWords: draftStrictSectionWords,
+  });
+
+  const applyNormalizedWordControlDraft = (options: OutlineWordControlOptions) => {
+    setDraftWordControlEnabled(options.enabled);
+    setDraftMinimumWords(String(options.minimumWords));
+    setDraftMaximumWords(String(options.maximumWords));
+    setDraftSectionWords(String(options.sectionWords));
+    setDraftStrictSectionWords(options.strictSectionWords);
+  };
+
+  const saveOutlineConfig = async () => {
+    try {
+      const wordControlOptions = getNormalizedWordControlOptions();
+      setSavingOutlineConfig(true);
+      await onOutlineConfigChange({
+        referenceKnowledgeDocumentIds: draftKnowledgeDocumentIds,
+        outlineExpansionMode: isExpansionWorkflow ? draftOutlineExpansionMode : 'ai-complement',
+        wordControlOptions,
+      });
+      applyNormalizedWordControlDraft(wordControlOptions);
+      setGenerationDialogOpen(false);
+      showToast('目录生成配置已保存', 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '保存目录配置失败', 'error');
+    } finally {
+      setSavingOutlineConfig(false);
+    }
   };
 
   const generateOutline = async () => {
@@ -458,22 +574,33 @@ function OutlineEditPage({
     }
 
     try {
+      const wordControlOptions = getNormalizedWordControlOptions();
       const startedNow = Date.now();
       setStartingOutline(true);
       setLocalStartAt(startedNow);
       setNowTick(startedNow);
       const nextOutlineExpansionMode = isExpansionWorkflow ? draftOutlineExpansionMode : 'ai-complement';
-      onOutlineConfigChange({
+      await onOutlineConfigChange({
         referenceKnowledgeDocumentIds: draftKnowledgeDocumentIds,
         outlineExpansionMode: nextOutlineExpansionMode,
+        wordControlOptions,
       });
       setGenerationDialogOpen(false);
       await window.yibiao?.tasks.startOutlineGeneration({
         reference_knowledge_document_ids: draftKnowledgeDocumentIds,
         outline_expansion_mode: nextOutlineExpansionMode,
-        custom_outline_mode: !isExpansionWorkflow ? draftCustomOutlineMode : 'none',
+        custom_outline_mode: isExpansionWorkflow ? 'none' : draftCustomOutlineMode,
+        word_control_options: wordControlOptions,
+        debug_force_outline_agent_repair: developerMode && draftForceOutlineAgentRepair,
       });
-      trackConfigUsage({ outline_mode: isExpansionWorkflow ? nextOutlineExpansionMode : draftCustomOutlineMode === 'custom-complement' ? 'custom-outline' : 'aligned' });
+      trackConfigUsage({
+        outline_mode: isExpansionWorkflow ? nextOutlineExpansionMode : draftCustomOutlineMode === 'custom-complement' ? 'custom-outline' : 'aligned',
+        word_control_enabled: wordControlOptions.enabled,
+        minimum_words: wordControlOptions.minimumWords,
+        maximum_words: wordControlOptions.maximumWords,
+        section_words: wordControlOptions.sectionWords,
+        strict_section_words: wordControlOptions.strictSectionWords,
+      });
       showToast('目录生成任务已在后台启动', 'success');
     } catch (error) {
       setStartingOutline(false);
@@ -483,10 +610,7 @@ function OutlineEditPage({
   };
 
   const cancelOutlineGeneration = async () => {
-    if (!taskRunning || cancelingOutline) {
-      return;
-    }
-
+    if (!taskRunning || cancelingOutline) return;
     try {
       setCancelingOutline(true);
       await window.yibiao?.tasks.cancelOutlineGeneration();
@@ -865,7 +989,6 @@ function OutlineEditPage({
             onDoubleClick={() => hasChildren && toggleExpanded(item.id)}
           >
             <strong>{formatOutlineTitle(item.id, item.title, exportFormat.headings[Math.min(item.id.split('.').length - 1, 5)])}</strong>
-            <small>{item.description || '无描述'}</small>
           </button>
         </div>
         {hasChildren && isExpanded && item.children?.map((child) => renderItem(child, level + 1))}
@@ -907,10 +1030,7 @@ function OutlineEditPage({
   };
 
   const renderCustomOutlinePicker = () => {
-    if (isExpansionWorkflow) {
-      return null;
-    }
-
+    if (isExpansionWorkflow) return null;
     return (
       <section className="outline-generation-config-section custom-outline-section">
         <div className="outline-generation-config-head">
@@ -929,29 +1049,23 @@ function OutlineEditPage({
           ) : (
             <div className="custom-outline-empty">
               <strong>未上传自有大纲</strong>
-              <span>可上传 Word、PDF 或 Markdown 大纲草稿，作为本次目录生成的骨架。</span>
+              <span>可上传 Word、PDF 或 Markdown 大纲草稿，作为目录生成骨架。</span>
             </div>
           )}
-          <button
-            type="button"
-            className="secondary-action"
-            onClick={() => { void importCustomOutlineDocument(); }}
-            disabled={generating || importingCustomOutline || contentMutationLocked}
-          >
+          <button type="button" className="secondary-action" onClick={() => { void importCustomOutlineDocument(); }} disabled={generating || importingCustomOutline || contentMutationLocked}>
             {importingCustomOutline ? '解析中...' : customOutlineFile ? '替换大纲' : '上传大纲'}
           </button>
         </div>
         <div className="outline-expansion-mode-switch custom-outline-mode-switch">
           {customOutlineModeOptions.map((option) => {
             const selected = draftCustomOutlineMode === option.value;
-            const disabled = generating || (option.requiresFile && !customOutlineFile);
             return (
               <button
                 type="button"
                 className={`outline-expansion-mode-option${selected ? ' is-selected' : ''}`}
                 key={option.value}
                 onClick={() => setDraftCustomOutlineMode(option.value)}
-                disabled={disabled}
+                disabled={generating || (option.requiresFile && !customOutlineFile)}
                 aria-pressed={selected}
               >
                 <strong>{option.title}</strong>
@@ -1079,7 +1193,7 @@ function OutlineEditPage({
         <div>
           <span className="section-kicker">STEP 03</span>
           <strong>目录生成</strong>
-          <p>{isExpansionWorkflow ? `当前原方案目录使用方式：${outlineExpansionModeLabels[outlineExpansionMode]}；参考知识库：${referenceKnowledgeDocumentIds.length ? `已选择 ${referenceKnowledgeDocumentIds.length} 个文档` : '未选择'}。` : `可上传自有大纲作为目录骨架；当前自有大纲：${customOutlineFile ? customOutlineFile.fileName : '未上传'}；参考知识库：${referenceKnowledgeDocumentIds.length ? `已选择 ${referenceKnowledgeDocumentIds.length} 个文档` : '未选择'}。`}</p>
+          <p>{isExpansionWorkflow ? `当前原方案目录使用方式：${outlineExpansionModeLabels[outlineExpansionMode]}；参考知识库：${referenceKnowledgeDocumentIds.length ? `已选择 ${referenceKnowledgeDocumentIds.length} 个文档` : '未选择'}。` : `自有大纲：${customOutlineFile ? customOutlineFile.fileName : '未上传'}；参考知识库：${referenceKnowledgeDocumentIds.length ? `已选择 ${referenceKnowledgeDocumentIds.length} 个文档` : '未选择'}。`}</p>
         </div>
         <div className="outline-command-actions">
           <button
@@ -1096,12 +1210,7 @@ function OutlineEditPage({
             </svg>
           </button>
           {taskRunning && (
-            <button
-              type="button"
-              className="danger-action"
-              onClick={() => { void cancelOutlineGeneration(); }}
-              disabled={cancelingOutline}
-            >
+            <button type="button" className="danger-action" onClick={() => { void cancelOutlineGeneration(); }} disabled={cancelingOutline}>
               {cancelingOutline ? '正在取消...' : '取消生成'}
             </button>
           )}
@@ -1249,11 +1358,90 @@ function OutlineEditPage({
           <Dialog.Overlay className="content-regenerate-modal" />
           <Dialog.Content className="outline-generation-config-card">
             <Dialog.Title className="sr-only">{outlineData ? '重新生成目录' : '生成目录'}</Dialog.Title>
-            <Dialog.Description className="sr-only">选择本次目录生成方式和参考知识库。</Dialog.Description>
+            <Dialog.Description className="sr-only">选择本次目录生成方式、字数控制和参考知识库。</Dialog.Description>
 
-            <div className={`outline-generation-config-body${isExpansionWorkflow ? ' has-expansion-mode' : ' has-custom-outline'}`}>
+            <div className={`outline-generation-config-body${isExpansionWorkflow ? ' has-expansion-mode' : ' has-custom-outline'}${developerMode ? ' has-dev-tools' : ''}`}>
               {renderOutlineExpansionModePicker()}
               {renderCustomOutlinePicker()}
+              {developerMode && (
+                <section className="outline-generation-config-section outline-agent-debug-section">
+                  <label className="outline-agent-debug-option">
+                    <span>
+                      <strong>强制 Agent 修复目录</strong>
+                      <small>本次目录生成会在最终保存前强制进入智能体修复链路，用于验证 Agent workspace、结果 JSON 和程序校验。</small>
+                    </span>
+                    <span className="yb-switch-control">
+                      <input
+                        type="checkbox"
+                        checked={draftForceOutlineAgentRepair}
+                        onChange={(event) => setDraftForceOutlineAgentRepair(event.target.checked)}
+                      />
+                      <span className="yb-switch-track" aria-hidden="true">
+                        <span className="yb-switch-thumb" />
+                      </span>
+                    </span>
+                  </label>
+                </section>
+              )}
+              <section className="outline-generation-config-section outline-word-control-section">
+                <div className="content-generation-config-row">
+                  <span>
+                    <strong>控制字数</strong>
+                    <small>在目录阶段控制叶子小节数量，在正文阶段控制小节和全文字数。</small>
+                  </span>
+                  <Switch.Root className="content-generation-switch" checked={draftWordControlEnabled} onCheckedChange={setDraftWordControlEnabled} aria-label="控制字数">
+                    <Switch.Thumb className="content-generation-switch-thumb" />
+                  </Switch.Root>
+                </div>
+                {draftWordControlEnabled && (
+                  <div className="outline-word-control-options">
+                    <div className="outline-word-control-grid">
+                      <label>
+                        <span>最少字数</span>
+                        <input inputMode="numeric" value={draftMinimumWords} onChange={(event) => /^\d*$/.test(event.target.value) && setDraftMinimumWords(event.target.value)} onBlur={() => setDraftMinimumWords(String(parseWordCountDraft(draftMinimumWords) ?? 0))} />
+                        <small>0 代表不限制</small>
+                      </label>
+                      <label>
+                        <span>最多字数</span>
+                        <input inputMode="numeric" value={draftMaximumWords} onChange={(event) => /^\d*$/.test(event.target.value) && setDraftMaximumWords(event.target.value)} onBlur={() => setDraftMaximumWords(String(parseWordCountDraft(draftMaximumWords) ?? 0))} />
+                        <small>0 代表不限制</small>
+                      </label>
+                      <label>
+                        <span>每小节字数</span>
+                        <input inputMode="numeric" value={draftSectionWords} onChange={(event) => {
+                          if (!/^\d*$/.test(event.target.value)) return;
+                          setDraftSectionWords(event.target.value);
+                          if (!event.target.value || Number(event.target.value) === 0) setDraftStrictSectionWords(false);
+                        }} onBlur={() => {
+                          const sectionWords = parseWordCountDraft(draftSectionWords) ?? 0;
+                          setDraftSectionWords(String(sectionWords));
+                          if (sectionWords === 0) setDraftStrictSectionWords(false);
+                        }} />
+                        <small>0 代表不控制小节字数</small>
+                      </label>
+                    </div>
+                    <div className="content-generation-config-row">
+                      <span>
+                        <strong>强控小节字数</strong>
+                        <small>{draftStrictSectionWords ? '强制控制每小节字数必须是预设值的正负 20%' : '仅控制总字数'}</small>
+                      </span>
+                      <Switch.Root className="content-generation-switch" checked={draftStrictSectionWords} onCheckedChange={setDraftStrictSectionWords} disabled={parsedDraftSectionWords === 0} aria-label="强控小节字数，允许范围为预设值的正负 20%">
+                        <Switch.Thumb className="content-generation-switch-thumb" />
+                      </Switch.Root>
+                    </div>
+                    <div className="outline-word-control-estimate">
+                      <strong>预估页数</strong>
+                      <span>{estimatedPages === null ? '未设置总字数范围，无法预估' : `约 ${estimatedPages} 页`}</span>
+                      <small>页数和排版有关，无法精确预估。</small>
+                    </div>
+                  </div>
+                )}
+                {configurationRequiresRegeneration && (
+                  <div className="outline-word-control-notice">
+                    {outlineWordControlSnapshot ? '新设置需要重新生成目录后，才会应用于正文生成。' : '当前目录缺少字数控制生效配置，请重新生成目录。'}
+                  </div>
+                )}
+              </section>
               <section className="outline-generation-config-section outline-knowledge-picker">
                 <div className="outline-generation-config-head">
                   <strong>参考知识库</strong>
@@ -1265,11 +1453,11 @@ function OutlineEditPage({
 
             <div className="content-regenerate-actions">
               <Dialog.Close className="secondary-action" type="button">取消</Dialog.Close>
-              <button type="button" className="secondary-action" onClick={saveOutlineConfig} disabled={generating || contentMutationLocked}>
-                保存配置
+              <button type="button" className="secondary-action" onClick={() => { void saveOutlineConfig(); }} disabled={generating || contentMutationLocked || savingOutlineConfig}>
+                {savingOutlineConfig ? '正在保存...' : '保存配置'}
               </button>
-              <button type="button" className="primary-action" onClick={generateOutline} disabled={generating || contentMutationLocked || !projectOverview || !techRequirements}>
-                开始生成
+              <button type="button" className="primary-action" onClick={generateOutline} disabled={generating || contentMutationLocked || savingOutlineConfig || !projectOverview || !techRequirements}>
+                {outlineData ? '重新生成目录' : '开始生成'}
               </button>
             </div>
           </Dialog.Content>

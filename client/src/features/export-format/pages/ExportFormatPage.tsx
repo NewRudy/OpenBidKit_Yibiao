@@ -1,4 +1,4 @@
-import * as Dialog from '@radix-ui/react-dialog';
+﻿import * as Dialog from '@radix-ui/react-dialog';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { trackPageView } from '../../../shared/analytics/analytics';
 import { FloatingToolbar, useToast } from '../../../shared/ui';
@@ -243,6 +243,17 @@ function headingPreviewTitle(config: ExportFormatConfig, level: number, id: stri
   return formatOutlineTitle(id, title, heading);
 }
 
+function createDefaultTemplateName(date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  const second = String(date.getSeconds()).padStart(2, '0');
+
+  return `yibiao-${year}-${month}-${day}-${hour}${minute}${second}`;
+}
+
 function createDefaultExportFormat(): ExportFormatConfig {
   return {
     template_name: DEFAULT_EXPORT_FORMAT.template_name,
@@ -261,6 +272,13 @@ function createDefaultExportFormat(): ExportFormatConfig {
       body_cell: { ...DEFAULT_EXPORT_FORMAT.table.body_cell },
     },
     image: { ...DEFAULT_EXPORT_FORMAT.image },
+  };
+}
+
+function createNewTemplateExportFormat(): ExportFormatConfig {
+  return {
+    ...createDefaultExportFormat(),
+    template_name: createDefaultTemplateName(),
   };
 }
 
@@ -291,7 +309,9 @@ function withExportFormatDefaults(source: ExportFormatConfig): ExportFormatConfi
 function ExportFormatPage({ mode = 'create', templateId = null, onBack }: ExportFormatPageProps) {
   const { showToast } = useToast();
   const [activeTab, setActiveTab] = useState<TemplateTab>('quick');
-  const [config, setConfig] = useState<ExportFormatConfig>(() => createDefaultExportFormat());
+  const [config, setConfig] = useState<ExportFormatConfig>(
+    () => mode === 'create' ? createNewTemplateExportFormat() : createDefaultExportFormat(),
+  );
   const [savedConfig, setSavedConfig] = useState<ExportFormatConfig | null>(null);
   const [currentTemplateId, setCurrentTemplateId] = useState<string | null>(templateId);
   const [selectedLayoutPresetId, setSelectedLayoutPresetId] = useState('');
@@ -343,7 +363,7 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
           return;
         }
 
-        const defaultConfig = createDefaultExportFormat();
+        const defaultConfig = createNewTemplateExportFormat();
         if (cancelled) return;
         setCurrentTemplateId(null);
         setConfig(defaultConfig);
@@ -369,6 +389,19 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
   const updateTemplate = useCallback((updates: Partial<ExportFormatConfig>) => {
     setConfig((prev) => ({ ...prev, ...updates }));
   }, []);
+
+  const handleConfirmTemplateName = useCallback(() => {
+    const templateName = config.template_name.trim();
+    if (!templateName) {
+      showToast('请输入模板名称', 'info');
+      return;
+    }
+
+    if (templateName !== config.template_name) {
+      updateTemplate({ template_name: templateName });
+    }
+    showToast('模板名称已确认，保存配置后生效', 'success');
+  }, [config.template_name, showToast, updateTemplate]);
 
   const updatePage = useCallback((updates: Partial<PageSetupConfig>) => {
     setConfig((prev) => ({ ...prev, page: { ...prev.page, ...updates } }));
@@ -463,9 +496,15 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
       return;
     }
 
-    setConfig(createDefaultExportFormat());
+    setConfig((prev) => {
+      if (mode === 'create') {
+        return createNewTemplateExportFormat();
+      }
+
+      return { ...createDefaultExportFormat(), template_name: prev.template_name };
+    });
     showToast('已恢复默认模版设置，保存后生效', 'info');
-  }, [selectedLayoutPresetId, selectedThemePresetId, showToast]);
+  }, [mode, selectedLayoutPresetId, selectedThemePresetId, showToast]);
 
   const handleApplyLayoutPreset = useCallback((presetId: string) => {
     if (!presetId) return;
@@ -669,6 +708,31 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
             {EXPORT_THEME_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
           </select>
         </label>
+        {mode === 'create' ? (
+          <form
+            className="settings-row export-template-name-row"
+            onSubmit={(event) => {
+              event.preventDefault();
+              handleConfirmTemplateName();
+            }}
+          >
+            <div className="settings-row-copy">
+              <strong>设置模板名称</strong>
+              <span>默认按 yibiao-YYYY-MM-DD-HHmmss 格式生成，保存后显示在“我的模板”中。</span>
+            </div>
+            <div className="input-with-action export-template-name-control">
+              <input
+                type="text"
+                value={config.template_name}
+                onChange={(event) => updateTemplate({ template_name: event.target.value })}
+                placeholder="请输入模板名称"
+                aria-label="模板名称"
+                spellCheck={false}
+              />
+              <button type="submit" className="input-with-action-button">确定</button>
+            </div>
+          </form>
+        ) : null}
       </div>
       <div className="export-format-preset-panel">
         <div className="export-format-preset-panel-head">
@@ -725,9 +789,9 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
         </div>
         <label className="settings-row">
           <div className="settings-row-copy"><strong>页眉</strong></div>
-          <label className="settings-switch-control">
+          <label className="yb-switch-control">
             <input type="checkbox" checked={config.page.header_enabled} onChange={(event) => updatePage({ header_enabled: event.target.checked })} />
-            <span className="settings-switch-track" aria-hidden="true"><span className="settings-switch-thumb" /></span>
+            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
           </label>
         </label>
         {config.page.header_enabled && (
@@ -760,9 +824,9 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
         )}
         <label className="settings-row">
           <div className="settings-row-copy"><strong>页脚</strong></div>
-          <label className="settings-switch-control">
+          <label className="yb-switch-control">
             <input type="checkbox" checked={config.page.footer_enabled} onChange={(event) => updatePage({ footer_enabled: event.target.checked })} />
-            <span className="settings-switch-track" aria-hidden="true"><span className="settings-switch-thumb" /></span>
+            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
           </label>
         </label>
         {config.page.footer_enabled && (
@@ -801,9 +865,9 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
         )}
         <label className="settings-row">
           <div className="settings-row-copy"><strong>页码</strong><span>是否启用页码显示</span></div>
-          <label className="settings-switch-control">
+          <label className="yb-switch-control">
             <input type="checkbox" checked={config.page.page_number_enabled} onChange={(event) => updatePage({ page_number_enabled: event.target.checked })} />
-            <span className="settings-switch-track" aria-hidden="true"><span className="settings-switch-thumb" /></span>
+            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
           </label>
         </label>
         {config.page.page_number_enabled && (
@@ -831,25 +895,25 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
       <div className="settings-list">
         <label className="settings-row">
           <div className="settings-row-copy"><strong>一级标题另起页</strong></div>
-          <label className="settings-switch-control">
+          <label className="yb-switch-control">
             <input type="checkbox" checked={config.heading_level1_page_break_before} onChange={(event) => updateTemplate({ heading_level1_page_break_before: event.target.checked })} />
-            <span className="settings-switch-track" aria-hidden="true"><span className="settings-switch-thumb" /></span>
+            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
           </label>
         </label>
         <label className="settings-row">
           <div className="settings-row-copy"><strong>章节页框</strong><span>会导致导航窗格失效</span></div>
-          <label className="settings-switch-control">
+          <label className="yb-switch-control">
             <input type="checkbox" checked={config.heading_border.enabled} onChange={(event) => updateHeadingBorder({ enabled: event.target.checked })} />
-            <span className="settings-switch-track" aria-hidden="true"><span className="settings-switch-thumb" /></span>
+            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
           </label>
         </label>
         {config.heading_border.enabled && (
           <>
             <label className="settings-row">
               <div className="settings-row-copy"><strong>最小标题居左</strong><span>最小标题不显示序号，固定在内容左侧</span></div>
-              <label className="settings-switch-control">
+              <label className="yb-switch-control">
                 <input type="checkbox" checked={config.heading_border.min_heading_left_enabled} onChange={(event) => updateHeadingBorder({ min_heading_left_enabled: event.target.checked })} />
-                <span className="settings-switch-track" aria-hidden="true"><span className="settings-switch-thumb" /></span>
+                <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
               </label>
             </label>
             <label className="settings-row">
@@ -877,12 +941,59 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
           </>
         )}
       </div>
-      <div className="export-format-heading-note">
-        <strong>自定义编号说明</strong>
-        <span>
-          选择“自定义”后，可使用 <code>{'{zh}'}</code> 中文序号、<code>{'{num}'}</code> 当前级数字、<code>{'{tail}'}</code> 三级起局部编号、<code>{'{full}'}</code> 完整编号，例如：<code>第{'{zh}'}章 = 第一章</code>、<code>{'{tail}'} = 1.1.1</code>。
-        </span>
-      </div>
+      <details className="export-format-heading-note">
+        <summary className="export-format-heading-note-summary">
+          <span className="export-format-heading-note-title">
+            <strong>自定义编号说明</strong>
+            <span>选择“自定义”后，可用 <code>{'{zh}'}</code>、<code>{'{num}'}</code>、<code>{'{tail2}'}</code> 等占位符组合标题编号。</span>
+          </span>
+          <span className="export-format-heading-note-toggle">
+            <span className="is-closed">展开用法</span>
+            <span className="is-open">收起说明</span>
+            <span className="export-format-heading-note-chevron">▸</span>
+          </span>
+        </summary>
+        <div className="export-format-heading-note-detail">
+          <div className="export-format-heading-note-block">
+            <span className="export-format-heading-note-label">怎么填写</span>
+            <p>在每个标题卡片中，把“编号格式”设为“自定义”，再在“自定义格式”输入下面这些模板。</p>
+          </div>
+          <div className="export-format-heading-note-block">
+            <span className="export-format-heading-note-label">占位符</span>
+            <div className="export-format-heading-token-grid">
+              <span><code>{'{zh}'}</code><small>当前级中文数字，如 一、二</small></span>
+              <span><code>{'{num}'}</code><small>当前级数字，如 1、2</small></span>
+              <span><code>{'{full}'}</code><small>完整编号，如 1.2.3</small></span>
+              <span><code>{'{tail}'}</code><small>保留旧规则，三级起局部编号</small></span>
+              <span><code>{'{tail1}'}</code><small>从一级开始，等同完整编号</small></span>
+              <span><code>{'{tail2}'}</code><small>从二级开始，到当前级结束</small></span>
+              <span><code>{'{tail3}'}</code><small>从三级开始，到当前级结束</small></span>
+              <span><code>{'{tail4}'}</code><small>从四级开始，到当前级结束</small></span>
+              <span><code>{'{tail5}'}</code><small>从五级开始，到当前级结束</small></span>
+              <span><code>{'{tail6}'}</code><small>从六级开始，只保留六级编号</small></span>
+              <span><code>{'{circled}'}</code><small>当前级圆圈数字，如 ①、②</small></span>
+              <span><code>{'{alpha}'}</code><small>当前级小写字母，如 a、b</small></span>
+              <span><code>{'{ROMAN}'}</code><small>当前级大写罗马数字，如 I、II</small></span>
+            </div>
+          </div>
+          <div className="export-format-heading-note-block">
+            <span className="export-format-heading-note-label">常见配置示例</span>
+            <div className="export-format-heading-example-list">
+              <span><code>（{'{zh}'}）</code><small>一级标题显示 （一）</small></span>
+              <span><code>第{'{zh}'}章</code><small>一级标题显示 第一章</small></span>
+              <span><code>{'{tail2}'}.</code><small>二级标题显示 1.</small></span>
+              <span><code>{'{tail2}'}</code><small>三级标题显示 1.1，四级标题显示 1.1.1</small></span>
+              <span><code>{'{tail3}'}</code><small>三级标题显示 1，四级标题显示 1.1</small></span>
+              <span><code>{'{tail6}'}</code><small>六级标题只显示当前六级数字</small></span>
+              <span><code>{'{num}'}、</code><small>当前级显示 1、</small></span>
+              <span><code>（{'{num}'}）</code><small>当前级显示 （1）</small></span>
+              <span><code>{'{circled}'}</code><small>当前级显示 ①</small></span>
+              <span><code>{'{ALPHA}'}.</code><small>当前级显示 A.</small></span>
+              <span><code>{'{roman}'}.</code><small>当前级显示 i.</small></span>
+            </div>
+          </div>
+        </div>
+      </details>
       <div className="export-format-heading-list">
         {config.headings.map((heading, index) => {
           const isExpanded = expandedHeadings.has(index);
@@ -909,7 +1020,7 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
                         <input
                           type="text"
                           value={heading.numbering_template}
-                          placeholder="例如：第{zh}章、第{num}章"
+                          placeholder="例如：第{zh}章、{tail2}、（{num}）"
                           onChange={(event) => updateHeading(index, { numbering_template: event.target.value })}
                         />
                       </label>
@@ -932,9 +1043,9 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
                     </label>
                     <label className="export-format-heading-switch">
                       <span>加粗</span>
-                      <label className="settings-switch-control">
+                      <label className="yb-switch-control">
                         <input type="checkbox" checked={heading.bold} onChange={(event) => updateHeading(index, { bold: event.target.checked })} />
-                        <span className="settings-switch-track" aria-hidden="true"><span className="settings-switch-thumb" /></span>
+                        <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
                       </label>
                     </label>
                     <label>
@@ -1093,9 +1204,9 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
         </label>
         <label className="settings-row">
           <div className="settings-row-copy"><strong>表格铺满页面</strong></div>
-          <label className="settings-switch-control">
+          <label className="yb-switch-control">
             <input type="checkbox" checked={config.table.full_width} onChange={(event) => updateTable({ full_width: event.target.checked })} />
-            <span className="settings-switch-track" aria-hidden="true"><span className="settings-switch-thumb" /></span>
+            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
           </label>
         </label>
       </div>
@@ -1140,16 +1251,16 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
         </label>
         <label className="settings-row">
           <div className="settings-row-copy"><strong>图题加粗</strong></div>
-          <label className="settings-switch-control">
+          <label className="yb-switch-control">
             <input type="checkbox" checked={config.image.caption_bold} onChange={(event) => updateImage({ caption_bold: event.target.checked })} />
-            <span className="settings-switch-track" aria-hidden="true"><span className="settings-switch-thumb" /></span>
+            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
           </label>
         </label>
         <label className="settings-row">
           <div className="settings-row-copy"><strong>图题斜体</strong></div>
-          <label className="settings-switch-control">
+          <label className="yb-switch-control">
             <input type="checkbox" checked={config.image.caption_italic} onChange={(event) => updateImage({ caption_italic: event.target.checked })} />
-            <span className="settings-switch-track" aria-hidden="true"><span className="settings-switch-thumb" /></span>
+            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
           </label>
         </label>
       </div>
@@ -1165,9 +1276,9 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
       <div className="settings-list">
         <label className="settings-row">
           <div className="settings-row-copy"><strong>首页不同</strong><span>勾选后首页使用独立页眉页脚，适合封皮不显示页码。</span></div>
-          <label className="settings-switch-control">
+          <label className="yb-switch-control">
             <input type="checkbox" checked={config.page.first_page_different} onChange={(event) => updatePage({ first_page_different: event.target.checked })} />
-            <span className="settings-switch-track" aria-hidden="true"><span className="settings-switch-thumb" /></span>
+            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
           </label>
         </label>
       </div>
@@ -1243,7 +1354,7 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
               <Dialog.Title>{exportProgress.running ? '正在导出测试' : exportProgress.error ? '导出失败' : '导出完成'}</Dialog.Title>
               <Dialog.Description>
                 {exportProgress.mermaidCount > 0
-                  ? `本次包含 ${exportProgress.mermaidCount} 张 Mermaid 图，导出时会通过 mermaid.ink 转换成 Word 图片，速度受网络影响。`
+                  ? `本次包含 ${exportProgress.mermaidCount} 张 Mermaid 图，导出时会在本地转换成 Word 图片。`
                   : '正在使用当前模板导出已生成的技术方案。'}
               </Dialog.Description>
             </div>

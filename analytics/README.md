@@ -17,7 +17,7 @@
 | D1 `openbidkit-analytics` | `ANALYTICS_DB` | 新版 `stats_*` 长期统计表 |
 | D1 `openbidkit-resources` | `RESOURCE_DB` | 资源管理元数据 |
 | R2 `openbidkit` | `RESOURCE_BUCKET` | 资源图片 |
-| KV | `NOTICE_STORE` | 公告和 GitHub stats 缓存 |
+| KV | `NOTICE_STORE` | 公告、授权配置和 GitHub stats 缓存 |
 
 `openbidkit-analytics` 可以在改版时直接删除并由 `setup:analytics-storage` 重建；不要删除 `openbidkit-resources`。
 
@@ -26,21 +26,23 @@
 | 接口 | 数据源 | 鉴权 | 用途 |
 | --- | --- | --- | --- |
 | `GET /health` | Worker | 无 | 健康检查 |
-| `POST /track` | AE + D1 | 无 | 写 AE；从 Cloudflare 真实客户端 IP 请求头记录客户端 IP；仅对 `client_created_at` 距当前业务日期不超过 1 天的新客户端尝试实时写 `stats_clients` |
+| `POST /track` | AE + D1 | 无 | 写 AE；从 Cloudflare 真实客户端 IP 请求头记录客户端 IP；新客户端按 `client_created_at` 窗口实时入库，授权字段按快照覆盖既有 `stats_clients` |
 | `GET /api/projects` | D1 优先，AE 兜底 | `ADMIN_TOKEN` | 项目列表 |
-| `GET /api/overview` | D1 + AE + KV | `ADMIN_TOKEN` | 概览总数、新增、今日活跃、每日统计 |
+| `GET /api/overview` | D1 + AE + KV | `ADMIN_TOKEN` | 概览总数、文本 Token、生图次数、新增、今日活跃、每日统计 |
 | `GET /api/clients` | D1 | `ADMIN_TOKEN` | 客户端统计列表 |
 | `GET /api/client-detail` | AE | `ADMIN_TOKEN` | 单客户端 7天/30天/全部事件明细 |
 | `GET /api/ip-stats` | D1 | `ADMIN_TOKEN` | 按最后访问 IP 汇总客户端数，分页返回 |
 | `GET /api/traffic` | D1 或 AE | `ADMIN_TOKEN` | 访问分析，`range=history/today/7/30` |
 | `GET /api/config-usage` | D1 或 AE | `ADMIN_TOKEN` | 配置使用，`range=history/today/7/30` |
 | `GET /api/model-usage` | D1 或 AE | `ADMIN_TOKEN` | 模型使用，支持 `provider/endpointHost/model` 筛选 |
-| `GET /api/agent-runtime` | D1 或 AE | `ADMIN_TOKEN` | Agent 执行成功率，`range=history/today/7/30` |
+| `GET /api/agent-runtime` | D1 或 AE | `ADMIN_TOKEN` | Agent 总体、运行时、模型维度的成功率、失败率、重试率和重试后成功率，`range=history/today/7/30` |
 | `GET /api/latest` | AE | `ADMIN_TOKEN` | 最近事件，支持 `event` 筛选 |
 | `GET /api/retention` | D1 | `ADMIN_TOKEN` | 留存概览，读取 Cron 生成的最新 30 天快照 |
 | `GET /api/github-repo-stats` | GitHub + KV | `ADMIN_TOKEN` | GitHub stats |
 | `GET /notice` | KV | 无 | 客户端公告 |
 | `GET/POST/DELETE /api/notice` | KV | `ADMIN_TOKEN` | 公告后台管理 |
+| `POST /license/activate` | KV + Worker Secret | 无 | 客户端免费授权签发，返回带签名 license |
+| `GET/POST /api/license-config` | KV | `ADMIN_TOKEN` | 授权配置后台管理 |
 | `GET /resources` | `RESOURCE_DB` + AE | 无 | 客户端资源列表，点击量为 D1 累计 + AE 今天 |
 | `GET/POST/DELETE /api/resources` | `RESOURCE_DB` + R2 + AE | `ADMIN_TOKEN` | 资源管理 |
 
@@ -55,7 +57,7 @@
 | 活跃客户端 | 任意允许事件去重 `client_id` |
 | 总客户端数 | D1 `stats_totals.total_clients` |
 | 今日/7日新增 | D1 `stats_clients.first_seen_date` |
-| 实时客户端入库 | `/track` 只尝试写当前业务日期或前 1 天创建的客户端，同一 Worker 实例内同一客户端只尝试一次；D1 写入失败不影响 `/track` 返回成功；老客户端活跃由 Cron 批量更新 |
+| 实时客户端入库 | `/track` 只对当前业务日期或前 1 天创建的客户端尝试实时插入并增加总客户端数；授权字段会按客户端授权快照覆盖既有 `stats_clients`；D1 写入失败不影响 `/track` 返回成功；老客户端活跃由 Cron 批量更新 |
 | 最后访问 IP | Worker 优先记录 `CF-Connecting-IP`；如果它是 Pseudo IPv4 的 `240.0.0.0/4` 伪地址，则改用 `CF-Connecting-IPv6`；完全忽略 `CF-Pseudo-IPv4`。AE 写入 `blob13`，D1 `stats_clients.last_access_ip` 由新客户端实时入库和每日 Cron 更新 |
 | 每日统计 | 今天读 AE，前 9 天读 D1 |
 | 最近事件 | 只读 AE，不入 D1 |
@@ -63,8 +65,10 @@
 | 资源点击量 | `RESOURCE_DB.resources.click_count` 保存历史累计，页面查询时加上 AE 今天点击量 |
 | 版本客户端数 | D1 历史来自 `stats_clients.last_active_version` 当前分组重算；今天/7天/30天来自 AE 去重客户端数 |
 | 模型 Total Tokens | `ai_request` 的 `double4` 按 `_sample_interval` 聚合，历史写入 `stats_models.total_tokens` |
-| Agent 执行成功率 | `agent_runtime` 的 `agent_runtime_status=success/failed` 聚合；历史读 D1，今天/7天/30天读 AE |
+| 概览 AI 指标 | 北京时间 02:30 模型汇总完成后，从 D1 `stats_models` 覆盖刷新 `stats_totals.total_text_tokens` 和 `stats_totals.total_generated_images`；生成图片数沿用生图模型请求次数口径 |
+| Agent 执行统计 | `agent_runtime` 的 `blob9` 单字段 v3 复合值聚合，包含运行时、最终状态、重试次数、文本模型服务商、endpoint host 和模型名；历史读 D1，今天/7天/30天读 AE；已有 v2 AE 指标和迁移前 D1 汇总统一归为 `opencode` |
 | 配置使用 | 新版 `config_usage` 使用 `config_key/config_value` 键值对上报；D1 历史保留，AE 旧格式不再兼容 |
+| 授权状态 | 客户端上报 `license_status/license_plan/license_expires_at/source_trusted/untrusted_reason`；AE 写入 `blob14-blob18`，D1 `stats_clients` 保存最新状态 |
 
 ## 事件类型
 
@@ -75,9 +79,11 @@
 | `config_usage` | 配置使用 |
 | `ai_request` | 模型使用、AI 请求、Token |
 | `resource_click` | 资源点击 |
-| `agent_runtime` | Agent 执行成功率 |
+| `agent_runtime` | Agent 执行成功率、失败率、重试率和重试后成功率 |
 
-`config_usage` 使用 `config_key/config_value` 键值对上报，每个配置项一条事件。Worker 从 Cloudflare 真实客户端 IP 请求头读取公网 IP 并写入 `blob13`，客户端不自报 IP；`CF-Pseudo-IPv4` 不参与统计。`ai_request` 只采集请求类型、服务商、endpoint host、模型名和 token 用量，不采集 API Key、Prompt、响应内容或错误详情。`agent_runtime` 只采集 `success/failed` 状态，不采集任务内容、错误详情或输出。
+`config_usage` 使用 `config_key/config_value` 键值对上报，每个配置项一条事件。Worker 从 Cloudflare 真实客户端 IP 请求头读取公网 IP 并写入 `blob13`，客户端不自报 IP；`CF-Pseudo-IPv4` 不参与统计。授权状态写入 `blob14-blob18`，只包含状态、授权类型、有效期日期和可信来源标记，不上传设备原始指纹。`ai_request` 只采集请求类型、服务商、endpoint host、模型名和 token 用量，不采集 API Key、Prompt、响应内容或错误详情。`agent_runtime` 额外接收运行时注册表 ID 字段 `agent_runtime_kind`，使用 `^[a-z0-9][a-z0-9._-]{0,39}$` 通用低基数字符格式校验，不限定具体运行时白名单；执行统计编码到 `blob9=v3|<runtime>|<success|failed>|r<0-3>|<provider>|<host>|<model>`，不采集 API Key、任务内容、错误详情、Prompt、输出或本地路径。
+
+`GET /api/agent-runtime` 的 `agentRuntime` 保留总体计数，并返回 `successRate/failureRate/retryRate/retrySuccessRate`；`runtimes[]` 按运行时返回同口径指标；`models[]` 模型明细包含 `runtime`，并继续返回服务商、endpoint host、模型及全部执行指标。
 
 ## 首次部署
 
@@ -100,8 +106,18 @@ Worker 运行时还需要在 Cloudflare 后台配置 Secret：
 | `ADMIN_TOKEN` | Dashboard 管理 Token |
 | `ANALYTICS_API_TOKEN` | Analytics Engine SQL Read Token |
 | `GITHUB_API_TOKEN` | 可选，降低 GitHub API 限流概率 |
+| `LICENSE_PRIVATE_KEY_JWK` | ECDSA P-256 私钥 JWK，用于签发客户端 license |
+| `LICENSE_KEY_ID` | 可选，授权签名 key id，默认 `official-build-key-2026-01` |
 
 不要在 `wrangler.jsonc` 增加 `secrets.required`。
+
+授权密钥使用 ECDSA P-256 JWK。可在本地用 Node 生成一次密钥对，把私钥 JSON 配置到 GitHub Actions Secret `YIBIAO_LICENSE_PRIVATE_KEY_JWK` 和 Worker Secret `LICENSE_PRIVATE_KEY_JWK`：
+
+```powershell
+node -e "const { webcrypto } = require('node:crypto'); (async () => { const key = await webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign','verify']); console.log(JSON.stringify(await webcrypto.subtle.exportKey('jwk', key.privateKey))); })();"
+```
+
+公钥由客户端发布脚本从私钥 JWK 自动导出并打入安装包，不需要作为 Secret 保存。
 
 ### 2. 创建或复用存储
 
@@ -121,7 +137,7 @@ npm run setup:analytics-storage
 | --- | --- |
 | D1 | 创建或复用 `openbidkit-analytics`，binding 为 `ANALYTICS_DB` |
 | Cron | 确认北京时间 01:00 到 03:00 每 30 分钟一个触发点的 5 个 Cron |
-| Migration | 执行 `analytics-migrations/*.sql`，并自动补齐 `stats_versions.client_count`、`stats_models.total_tokens` |
+| Migration | 通过 Wrangler D1 migrations 执行 `analytics-migrations/*.sql` 并记录已应用版本；Agent 运行时迁移会重建 `stats_agent_runtime` 联合主键并将既有汇总归为 `opencode`；同时自动补齐 `stats_clients` 授权字段、`stats_versions.client_count`、`stats_models.total_tokens` 和概览 AI 指标字段 |
 
 如果刚删除过 `openbidkit-analytics`，脚本会重新创建并更新 `wrangler.jsonc` 的 `database_id`。
 
@@ -209,6 +225,13 @@ Remove-Item Env:\BACKFILL_DATE
 ```powershell
 cd analytics\worker
 npm run backfill:analytics-stat-fields
+```
+
+只根据 D1 已有模型历史统计回填概览 Token 消耗量和生成图片数时，执行独立脚本：
+
+```powershell
+cd analytics\worker
+npm run backfill:overview-ai-totals
 ```
 
 注意事项：

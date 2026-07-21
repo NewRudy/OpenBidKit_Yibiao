@@ -95,7 +95,8 @@ function getScopeId(payload) {
 }
 
 function createDuplicateCheckPayloadSignature(payload = {}) {
-  const files = [payload.tenderFile, ...(Array.isArray(payload.bidFiles) ? payload.bidFiles : [])]
+  const tenderFiles = Array.isArray(payload.tenderFiles) ? payload.tenderFiles : [payload.tenderFile].filter(Boolean);
+  const files = [...tenderFiles, ...(Array.isArray(payload.bidFiles) ? payload.bidFiles : [])]
     .filter(Boolean)
     .map((file) => `${file.file_path}|${file.size}|${file.modified_at}`);
   return crypto.createHash('sha1').update(files.join('\n')).digest('hex');
@@ -134,11 +135,9 @@ function createTaskCancelledError(message = '任务已取消') {
 }
 
 function isTaskCancelledError(error) {
-  return error?.code === TASK_CANCELLED_CODE || error?.name === 'AbortError' || String(error?.message || '').includes('任务已取消');
-}
-
-function collectLeafItems(items) {
-  return (items || []).flatMap((item) => item?.children?.length ? collectLeafItems(item.children) : [item]);
+  return error?.code === TASK_CANCELLED_CODE
+    || error?.name === 'AbortError'
+    || String(error?.message || '').includes('任务已取消');
 }
 
 function clearOutlineContentByIds(items, interruptedIds) {
@@ -190,29 +189,9 @@ function normalizeInterruptedContentSections(technicalPlan) {
 }
 
 function inferContentGenerationPhase(technicalPlan) {
-  const taskContent = technicalPlan?.contentGenerationTask?.stats?.content || {};
-  const taskPhase = taskContent.phase;
-  const runtimePhase = technicalPlan?.contentGenerationRuntime?.phase;
-  if (['restoring', 'outline-expanding', 'expanding', 'original-auditing', 'auditing', 'table-cleaning', 'illustrating'].includes(taskPhase)) {
-    return taskPhase;
-  }
-  if (['planning', 'restoring', 'generating', 'outline-expanding', 'expanding', 'original-auditing', 'auditing', 'table-cleaning', 'illustrating'].includes(runtimePhase)) {
-    return runtimePhase;
-  }
-
-  const leaves = collectLeafItems(technicalPlan?.outlineData?.outline || []);
-  const sections = technicalPlan?.contentGenerationSections || {};
-  const completed = leaves.filter((item) => sections[item.id]?.status === 'success').length;
-  const minimumWords = Number(taskContent.minimum_words ?? technicalPlan?.contentGenerationOptions?.minimumWords ?? 0) || 0;
-  const currentWords = Number(taskContent.current_words ?? 0) || 0;
-
-  if (leaves.length && completed >= leaves.length && minimumWords > 0 && currentWords < minimumWords) {
-    return 'expanding';
-  }
-  if (leaves.length && completed > 0) {
-    return 'generating';
-  }
-  return taskPhase || 'planning';
+  return technicalPlan?.contentGenerationTask?.stats?.content?.phase
+    || technicalPlan?.contentGenerationRuntime?.phase
+    || 'planning';
 }
 
 function createTask(type, payload) {
@@ -261,6 +240,7 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
       if (state.outlineData === null) {
         copyPatchFields(patch, state, [
           'outlineData',
+          'outlineWordControlSnapshot',
           'outlineGenerationTask',
           'globalFactsTask',
           'globalFacts',
@@ -268,6 +248,7 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
           'contentGenerationOptions',
           'contentGenerationSections',
           'contentGenerationPlans',
+          'contentIllustrationPlan',
           'contentGenerationRuntime',
         ]);
       }
@@ -286,6 +267,7 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
         'projectOverview',
         'techRequirements',
         'outlineData',
+        'outlineWordControlSnapshot',
         'outlineGenerationTask',
         'referenceKnowledgeDocumentIds',
         'globalFactsTask',
@@ -294,12 +276,19 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
         'contentGenerationOptions',
         'contentGenerationSections',
         'contentGenerationPlans',
+        'contentIllustrationPlan',
         'contentGenerationRuntime',
       ]);
     }
 
     if (task.type === 'outline-generation') {
-      copyPatchFields(patch, state, ['outlineMode', 'outlineExpansionMode', 'referenceKnowledgeDocumentIds']);
+      copyPatchFields(patch, state, [
+        'outlineMode',
+        'outlineExpansionMode',
+        'outlineWordControlOptions',
+        'outlineWordControlSnapshot',
+        'referenceKnowledgeDocumentIds',
+      ]);
       if (task.status === 'success' || state.outlineData === null || hasOwn(eventPatch, 'outlineData')) {
         copyPatchFields(patch, state, [
           'outlineData',
@@ -308,6 +297,7 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
           'contentGenerationTask',
           'contentGenerationSections',
           'contentGenerationPlans',
+          'contentIllustrationPlan',
           'contentGenerationRuntime',
         ]);
       }
@@ -320,18 +310,20 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
           'contentGenerationTask',
           'contentGenerationSections',
           'contentGenerationPlans',
+          'contentIllustrationPlan',
           'contentGenerationRuntime',
         ]);
       }
     }
 
     if (task.type === 'content-generation') {
-      copyPatchFields(patch, state, ['contentGenerationRuntime']);
+      copyPatchFields(patch, state, ['outlineWordControlSnapshot', 'contentIllustrationPlan', 'contentGenerationRuntime']);
       if (!isActiveTaskStatus(task.status)) {
         copyPatchFields(patch, state, [
           'outlineData',
           'contentGenerationSections',
           'contentGenerationPlans',
+          'contentIllustrationPlan',
           'contentGenerationRuntime',
         ]);
       }
@@ -500,9 +492,6 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
       isPauseRequested() {
         return this.pauseRequested;
       },
-      isCancelRequested() {
-        return this.cancelRequested;
-      },
       throwIfCancelled() {
         if (this.cancelRequested || this.abortController.signal.aborted) {
           throw createTaskCancelledError(this.cancelMessage || '任务已取消');
@@ -526,18 +515,15 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
         }
         const currentLogs = Array.isArray(currentTask.logs) ? currentTask.logs : [];
         const nextLogs = currentLogs.includes(message) ? currentLogs : [...currentLogs, message];
-        if (currentTask.status === 'error' && currentTask.error === message) {
-          return currentTask;
-        }
         const canceledTask = updateTask({ status: 'error', error: message, logs: nextLogs, pause_requested: false });
-        const state = taskField ? updateWorkspaceState(definition, { [taskField]: canceledTask }) : loadWorkspaceState(definition);
+        const state = updateWorkspaceState(definition, { [taskField]: canceledTask });
         emit(canceledTask, buildSnapshot(definition, state, canceledTask));
         return canceledTask;
       },
     };
     activeTaskControls.set(type, taskControl);
 
-    const updateTask = (partial, workspaceState, eventPatch) => {
+    const updateTask = (partial, workspaceState, eventPatch, options = {}) => {
       if (taskControl.cancelRequested && partial.status !== 'error') {
         throw createTaskCancelledError(taskControl.cancelMessage || '任务已取消');
       }
@@ -554,7 +540,14 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
       };
       activeTasks.set(type, currentTask);
       if (workspaceState) {
-        const persistedState = taskField ? updateWorkspaceState(definition, { [taskField]: currentTask }) : workspaceState;
+        let persistedState = workspaceState;
+        if (taskField) {
+          if (options.skipWorkspaceReload && definition.stateKey === 'technicalPlan') {
+            technicalPlanStore.updateTechnicalPlanWithoutReload({ [taskField]: currentTask });
+          } else {
+            persistedState = updateWorkspaceState(definition, { [taskField]: currentTask });
+          }
+        }
         emit(currentTask, buildSnapshot(definition, persistedState, currentTask, eventPatch));
       }
       return currentTask;
@@ -569,17 +562,19 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
       : definition.stateKey === 'rejectionCheck'
         ? rejectionCheckStore
         : duplicateCheckStore;
-    const runnerAiService = aiService?.withQueueScope ? aiService.withQueueScope(queueScopeId, taskControl.abortController.signal) : aiService;
-    runner({ aiService: runnerAiService, agentService, workspaceStore: runnerWorkspaceStore, knowledgeBaseService, updateTask, payload, taskControl, previousState }).catch((error) => {
+    const runnerAiService = aiService?.withQueueScope
+      ? aiService.withQueueScope(queueScopeId, taskControl.abortController.signal)
+      : aiService;
+    const runnerAgentService = agentService.bindSelectedRuntime();
+    runner({ aiService: runnerAiService, agentService: runnerAgentService, workspaceStore: runnerWorkspaceStore, knowledgeBaseService, updateTask, payload, taskControl, previousState }).catch((error) => {
       if (isTaskCancelledError(error) || taskControl.cancelRequested) {
         const message = taskControl.cancelMessage || '任务已取消，可重新开始。';
-        const currentLogs = Array.isArray(currentTask.logs) ? currentTask.logs : [];
-        const nextLogs = currentLogs.includes(message) ? currentLogs : [...currentLogs, message];
-        const canceledTask = currentTask.status === 'error'
-          ? currentTask
-          : updateTask({ status: 'error', error: message, logs: nextLogs, pause_requested: false });
-        const nextState = updateWorkspaceState(definition, { [taskField]: canceledTask });
-        emit(canceledTask, buildSnapshot(definition, nextState, canceledTask));
+        if (currentTask.status !== 'error') {
+          const currentLogs = Array.isArray(currentTask.logs) ? currentTask.logs : [];
+          const canceledTask = updateTask({ status: 'error', error: message, logs: [...currentLogs, message], pause_requested: false });
+          const nextState = updateWorkspaceState(definition, { [taskField]: canceledTask });
+          emit(canceledTask, buildSnapshot(definition, nextState, canceledTask));
+        }
         return;
       }
       const failedTask = updateTask({ status: 'error', error: error.message || '任务执行失败' });
@@ -646,6 +641,31 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
       },
     });
     emit(pausedTask, buildSnapshot(getTaskDefinition('content-generation'), state, pausedTask));
+  }
+
+  function recoverInterruptedOutlineGenerationTask() {
+    if (activeTasks.has('outline-generation')) {
+      return;
+    }
+
+    const technicalPlan = technicalPlanStore.loadTechnicalPlan() || {};
+    const outlineTask = technicalPlan.outlineGenerationTask;
+    if (!isActiveTaskStatus(outlineTask?.status)) {
+      return;
+    }
+
+    const message = '上次目录生成未完成，请重新生成目录；如旧方案目录提取已有进度，将自动继续。';
+    const recoveredTask = {
+      ...outlineTask,
+      status: 'error',
+      progress: Math.max(0, Math.min(99, Number(outlineTask.progress || 0) || 0)),
+      pause_requested: false,
+      error: message,
+      logs: [...(Array.isArray(outlineTask.logs) ? outlineTask.logs : []), message],
+      updated_at: now(),
+    };
+    const state = technicalPlanStore.updateTechnicalPlan({ outlineGenerationTask: recoveredTask });
+    emit(recoveredTask, buildSnapshot(getTaskDefinition('outline-generation'), state, recoveredTask));
   }
 
   function recoverInterruptedBidAnalysisTask() {
@@ -822,7 +842,6 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
     const taskField = getTaskField(type);
     const activeTask = activeTasks.get(type);
     const activeControl = activeTaskControls.get(type);
-
     if (activeTask && isActiveTaskStatus(activeTask.status) && activeControl?.requestCancel) {
       if (activeControl.queueScopeId && aiService?.pauseQueueScope) {
         aiService.pauseQueueScope(activeControl.queueScopeId);
@@ -831,16 +850,14 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
     }
 
     const state = loadWorkspaceState(definition) || {};
-    const storedTask = taskField ? state?.[taskField] : null;
+    const storedTask = taskField ? state[taskField] : null;
     if (storedTask && isActiveTaskStatus(storedTask.status)) {
-      const nextLogs = Array.isArray(storedTask.logs) && storedTask.logs.includes(message)
-        ? storedTask.logs
-        : [...(Array.isArray(storedTask.logs) ? storedTask.logs : []), message];
+      const logs = Array.isArray(storedTask.logs) ? storedTask.logs : [];
       const canceledTask = {
         ...storedTask,
         status: 'error',
         error: message,
-        logs: nextLogs,
+        logs: logs.includes(message) ? logs : [...logs, message],
         pause_requested: false,
         updated_at: now(),
       };
@@ -848,7 +865,6 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
       emit(canceledTask, buildSnapshot(definition, nextState, canceledTask));
       return canceledTask;
     }
-
     throw new Error(`当前没有正在运行的${definition.label || '任务'}。`);
   }
 
@@ -866,6 +882,7 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
         projectOverview: '',
         techRequirements: '',
         outlineData: null,
+        outlineWordControlSnapshot: undefined,
         outlineGenerationTask: undefined,
         referenceKnowledgeDocumentIds: [],
         globalFactsTask: undefined,
@@ -874,6 +891,7 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
         contentGenerationOptions: undefined,
         contentGenerationSections: {},
         contentGenerationPlans: {},
+        contentIllustrationPlan: undefined,
         contentGenerationRuntime: undefined,
       });
     },
@@ -884,6 +902,7 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
       return startManagedTask('outline-generation', payload, runOutlineGenerationTask, {
         outlineMode: 'aligned',
         outlineExpansionMode: payload?.outline_expansion_mode === 'original-only' ? 'original-only' : 'ai-complement',
+        outlineWordControlOptions: payload?.word_control_options,
         referenceKnowledgeDocumentIds: Array.isArray(payload?.reference_knowledge_document_ids) ? payload.reference_knowledge_document_ids : [],
       });
     },
@@ -896,10 +915,15 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
         contentGenerationTask: undefined,
         contentGenerationSections: {},
         contentGenerationPlans: {},
+        contentIllustrationPlan: undefined,
         contentGenerationRuntime: undefined,
       });
     },
     startContentGeneration(payload) {
+      const technicalPlan = technicalPlanStore.loadTechnicalPlan();
+      if (!technicalPlan.outlineWordControlSnapshot) {
+        throw new Error('当前目录没有字数控制生效快照，请重新生成目录');
+      }
       return startManagedTask('content-generation', payload, runContentGenerationTask);
     },
     pauseContentGeneration() {
@@ -935,6 +959,7 @@ function createTaskService({ aiService, agentService, technicalPlanStore, reject
     getActiveTasks() {
       recoverInterruptedBidSectionExtractionTask();
       recoverInterruptedBidAnalysisTask();
+      recoverInterruptedOutlineGenerationTask();
       recoverInterruptedContentGenerationTask();
       recoverInterruptedGlobalFactsTask();
       recoverInterruptedRejectionCheckTasks();

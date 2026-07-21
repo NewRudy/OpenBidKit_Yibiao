@@ -11,6 +11,14 @@ interface AnalyticsIdentity {
   clientCreatedAt: string;
 }
 
+interface AnalyticsLicenseSnapshot {
+  licenseStatus: string;
+  licensePlan: string;
+  licenseExpiresAt: string;
+  sourceTrusted: string;
+  untrustedReason: string;
+}
+
 interface ConfigUsagePayload {
   file_parser_provider?: string;
   image_provider?: string;
@@ -22,7 +30,11 @@ interface ConfigUsagePayload {
   use_ai_images?: boolean;
   content_concurrency?: number;
   content_generation_action?: string;
+  word_control_enabled?: boolean;
   minimum_words?: number;
+  maximum_words?: number;
+  section_words?: number;
+  strict_section_words?: boolean;
   enable_consistency_audit?: boolean;
   consistency_repair_mode?: string;
   enable_original_plan_coverage_audit?: boolean;
@@ -40,7 +52,11 @@ const configUsageFields: Array<[keyof ConfigUsagePayload, string]> = [
   ['use_ai_images', 'useAiImages'],
   ['content_concurrency', 'contentConcurrencies'],
   ['content_generation_action', 'contentGenerationActions'],
+  ['word_control_enabled', 'wordControlEnabled'],
   ['minimum_words', 'minimumWords'],
+  ['maximum_words', 'maximumWords'],
+  ['section_words', 'sectionWords'],
+  ['strict_section_words', 'strictSectionWords'],
   ['enable_consistency_audit', 'enableConsistencyAudit'],
   ['consistency_repair_mode', 'consistencyRepairModes'],
   ['enable_original_plan_coverage_audit', 'enableOriginalPlanCoverageAudit'],
@@ -51,6 +67,7 @@ let appOpenTracked = false;
 let lastTrackedPage = '';
 let versionPromise: Promise<string> | null = null;
 let identityPromise: Promise<AnalyticsIdentity> | null = null;
+let licenseSnapshot: { value: AnalyticsLicenseSnapshot; expiresAt: number } | null = null;
 
 function getLegacyClientId() {
   try {
@@ -123,6 +140,36 @@ function getVersion() {
   return versionPromise;
 }
 
+async function getAnalyticsLicenseSnapshot(): Promise<AnalyticsLicenseSnapshot> {
+  const now = Date.now();
+  if (licenseSnapshot && licenseSnapshot.expiresAt > now) {
+    return licenseSnapshot.value;
+  }
+
+  const empty: AnalyticsLicenseSnapshot = {
+    licenseStatus: '',
+    licensePlan: '',
+    licenseExpiresAt: '',
+    sourceTrusted: '',
+    untrustedReason: '',
+  };
+
+  try {
+    const status = await window.yibiao?.license?.getStatus();
+    const value = status ? {
+      licenseStatus: String(status.licenseStatus || status.status || ''),
+      licensePlan: String(status.plan || ''),
+      licenseExpiresAt: String(status.licenseExpiresAt || '').slice(0, 10),
+      sourceTrusted: String(status.sourceTrustedText || (status.sourceTrusted ? 'true' : 'false')),
+      untrustedReason: String(status.untrustedReason || ''),
+    } : empty;
+    licenseSnapshot = { value, expiresAt: now + 60_000 };
+    return value;
+  } catch {
+    return empty;
+  }
+}
+
 function booleanText(value: boolean | undefined) {
   if (value === undefined) return undefined;
   return value ? 'true' : 'false';
@@ -130,7 +177,7 @@ function booleanText(value: boolean | undefined) {
 
 function buildBaseConfigUsage(config?: ClientConfig | null): ConfigUsagePayload {
   return {
-    file_parser_provider: config?.file_parser?.provider,
+    file_parser_provider: config?.components?.file_parser?.provider,
     image_provider: config?.image_model?.provider,
     image_model_status: config?.image_model?.status || undefined,
   };
@@ -141,6 +188,8 @@ function normalizeUsagePayload(payload: ConfigUsagePayload) {
     ...payload,
     use_mermaid_images: booleanText(payload.use_mermaid_images),
     use_ai_images: booleanText(payload.use_ai_images),
+    word_control_enabled: booleanText(payload.word_control_enabled),
+    strict_section_words: booleanText(payload.strict_section_words),
     enable_consistency_audit: booleanText(payload.enable_consistency_audit),
     enable_original_plan_coverage_audit: booleanText(payload.enable_original_plan_coverage_audit),
   };
@@ -151,7 +200,7 @@ function configUsageValueText(value: unknown) {
 }
 
 function sendAnalytics(event: AnalyticsEvent, page = '', payload: Record<string, unknown> = {}) {
-  void Promise.all([getVersion(), getAnalyticsIdentity()]).then(([version, identity]) => {
+  void Promise.all([getVersion(), getAnalyticsIdentity(), getAnalyticsLicenseSnapshot()]).then(([version, identity, license]) => {
     fetch(ANALYTICS_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -166,6 +215,11 @@ function sendAnalytics(event: AnalyticsEvent, page = '', payload: Record<string,
         arch: '',
         client_id: identity.clientId,
         client_created_at: identity.clientCreatedAt,
+        license_status: license.licenseStatus,
+        license_plan: license.licensePlan,
+        license_expires_at: license.licenseExpiresAt,
+        source_trusted: license.sourceTrusted,
+        untrusted_reason: license.untrustedReason,
         ...payload,
       }),
     }).catch(() => undefined);
