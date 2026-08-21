@@ -3,7 +3,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const { getWorkspaceDatabasePath } = require('../utils/paths.cjs');
 
-const schemaVersion = 19;
+const schemaVersion = 24;
 
 function createInitialSchema(db) {
   db.exec(`
@@ -47,13 +47,13 @@ function createInitialSchema(db) {
       bid_section_extraction_error TEXT,
       outline_mode TEXT NOT NULL DEFAULT 'aligned',
       outline_expansion_mode TEXT NOT NULL DEFAULT 'ai-complement',
+      global_facts_mode TEXT NOT NULL DEFAULT 'fabricate',
       outline_word_control_options_json TEXT,
       outline_word_control_snapshot_json TEXT,
       outline_project_name TEXT,
       outline_project_overview TEXT,
       content_generation_options_json TEXT,
       content_generation_runtime_json TEXT,
-      content_illustration_plan_json TEXT,
       selected_section_id TEXT,
       selected_section_title TEXT,
       selected_section_head_line TEXT,
@@ -66,7 +66,6 @@ function createInitialSchema(db) {
       task_id TEXT NOT NULL,
       status TEXT NOT NULL,
       progress INTEGER NOT NULL DEFAULT 0,
-      logs_json TEXT,
       stats_json TEXT,
       error TEXT,
       pause_requested INTEGER NOT NULL DEFAULT 0,
@@ -102,6 +101,8 @@ function createInitialSchema(db) {
       level INTEGER NOT NULL,
       title TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
+      content_mode TEXT,
+      content_mode_note TEXT,
       source_requirement_id TEXT,
       source_requirement_title TEXT,
       knowledge_item_ids_json TEXT,
@@ -232,6 +233,10 @@ function addTechnicalPlanOutlineExpansionMode(db) {
   addColumnIfMissing(db, 'technical_plan_meta', 'outline_expansion_mode', "TEXT NOT NULL DEFAULT 'ai-complement'");
 }
 
+function addTechnicalPlanGlobalFactsMode(db) {
+  addColumnIfMissing(db, 'technical_plan_meta', 'global_facts_mode', "TEXT NOT NULL DEFAULT 'fabricate'");
+}
+
 function addTechnicalPlanBidSectionOptimization(db) {
   addColumnIfMissing(db, 'technical_plan_meta', 'tender_original_markdown_path', 'TEXT');
   addColumnIfMissing(db, 'technical_plan_meta', 'tender_original_markdown_hash', 'TEXT');
@@ -247,7 +252,6 @@ function addTechnicalPlanTenderFiles(db) {
 }
 
 function addTechnicalPlanIllustrationPlan(db) {
-  addColumnIfMissing(db, 'technical_plan_meta', 'content_illustration_plan_json', 'TEXT');
   removeLegacyTechnicalPlanIllustrationType(db);
 }
 
@@ -264,6 +268,103 @@ function addTechnicalPlanCustomOutline(db) {
   addColumnIfMissing(db, 'technical_plan_meta', 'custom_outline_markdown_chars', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing(db, 'technical_plan_meta', 'custom_outline_parser_label', 'TEXT');
   addColumnIfMissing(db, 'technical_plan_meta', 'custom_outline_imported_at', 'TEXT');
+}
+
+// 目录叶子内容处理模式；父节点保持为空，旧测试目录不补默认值。
+function addTechnicalPlanOutlineContentMode(db) {
+  addColumnIfMissing(db, 'technical_plan_outline_nodes', 'content_mode', 'TEXT');
+  addColumnIfMissing(db, 'technical_plan_outline_nodes', 'content_mode_note', 'TEXT');
+}
+
+function createTaskLogsAndIllustrationItemsSchema(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_domain TEXT NOT NULL,
+      task_type TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      message TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_task_logs_task
+    ON task_logs(task_domain, task_type, task_id, id DESC);
+
+    CREATE TRIGGER IF NOT EXISTS trg_technical_plan_task_logs_delete
+    AFTER DELETE ON technical_plan_tasks
+    BEGIN
+      DELETE FROM task_logs
+      WHERE task_domain = 'technical-plan' AND task_type = OLD.type AND task_id = OLD.task_id;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_rejection_check_task_logs_delete
+    AFTER DELETE ON rejection_check_tasks
+    BEGIN
+      DELETE FROM task_logs
+      WHERE task_domain = 'rejection-check' AND task_type = OLD.type AND task_id = OLD.task_id;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_duplicate_check_task_logs_delete
+    AFTER DELETE ON duplicate_check_tasks
+    BEGIN
+      DELETE FROM task_logs
+      WHERE task_domain = 'duplicate-check' AND task_type = OLD.type AND task_id = OLD.task_id;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_technical_plan_task_logs_replace
+    AFTER UPDATE OF task_id ON technical_plan_tasks
+    WHEN OLD.task_id <> NEW.task_id
+    BEGIN
+      DELETE FROM task_logs
+      WHERE task_domain = 'technical-plan' AND task_type = OLD.type AND task_id = OLD.task_id;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_rejection_check_task_logs_replace
+    AFTER UPDATE OF task_id ON rejection_check_tasks
+    WHEN OLD.task_id <> NEW.task_id
+    BEGIN
+      DELETE FROM task_logs
+      WHERE task_domain = 'rejection-check' AND task_type = OLD.type AND task_id = OLD.task_id;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_duplicate_check_task_logs_replace
+    AFTER UPDATE OF task_id ON duplicate_check_tasks
+    WHEN OLD.task_id <> NEW.task_id
+    BEGIN
+      DELETE FROM task_logs
+      WHERE task_domain = 'duplicate-check' AND task_type = OLD.type AND task_id = OLD.task_id;
+    END;
+
+    CREATE TABLE IF NOT EXISTS technical_plan_illustration_plans (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      plan_version INTEGER NOT NULL,
+      revision TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS technical_plan_illustration_items (
+      item_id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      image_type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      section_ids_json TEXT NOT NULL,
+      placement TEXT NOT NULL,
+      priority INTEGER NOT NULL DEFAULT 0,
+      generation_status TEXT,
+      generation_mode TEXT,
+      generation_code TEXT,
+      generation_source_path TEXT,
+      generation_asset_url TEXT,
+      generation_attempts INTEGER,
+      generation_error TEXT,
+      generation_updated_at TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_technical_plan_illustration_items_order
+    ON technical_plan_illustration_items(sort_order);
+  `);
 }
 
 function removeLegacyTechnicalPlanIllustrationType(db) {
@@ -324,7 +425,6 @@ function createDuplicateCheckSchema(db) {
       task_id TEXT NOT NULL,
       status TEXT NOT NULL,
       progress INTEGER NOT NULL DEFAULT 0,
-      logs_json TEXT,
       stats_json TEXT,
       error TEXT,
       payload_signature TEXT,
@@ -535,7 +635,6 @@ function createRejectionCheckSchema(db) {
       task_id TEXT NOT NULL,
       status TEXT NOT NULL,
       progress INTEGER NOT NULL DEFAULT 0,
-      logs_json TEXT,
       stats_json TEXT,
       error TEXT,
       started_at TEXT NOT NULL,
@@ -697,18 +796,6 @@ function createWorkspaceV2Schema(db) {
 
 function createKnowledgeBaseSchema(db) {
   db.exec(`
-    CREATE TABLE IF NOT EXISTS knowledge_migration_meta (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
-      legacy_index_hash TEXT,
-      status TEXT NOT NULL DEFAULT 'idle',
-      migrated_folder_count INTEGER NOT NULL DEFAULT 0,
-      migrated_document_count INTEGER NOT NULL DEFAULT 0,
-      started_at TEXT,
-      completed_at TEXT,
-      cleanup_completed_at TEXT,
-      error TEXT
-    );
-
     CREATE TABLE IF NOT EXISTS knowledge_folders (
       folder_id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -911,6 +998,58 @@ function createExportTemplatesSchema(db) {
   `);
 }
 
+function createFeasibilityReportSchema(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS feasibility_report_meta (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      step TEXT NOT NULL DEFAULT 'materials',
+      project_info_json TEXT,
+      source_files_json TEXT,
+      analysis_markdown TEXT,
+      outline_template TEXT NOT NULL DEFAULT 'government',
+      target_words INTEGER NOT NULL DEFAULT 30000,
+      reference_document_ids_json TEXT,
+      key_parameters_markdown TEXT,
+      outline_project_name TEXT,
+      outline_project_overview TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS feasibility_report_tasks (
+      type TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      progress INTEGER NOT NULL DEFAULT 0,
+      stats_json TEXT,
+      error TEXT,
+      pause_requested INTEGER NOT NULL DEFAULT 0,
+      started_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS feasibility_report_outline_nodes (
+      node_id TEXT PRIMARY KEY,
+      parent_node_id TEXT,
+      sort_order INTEGER NOT NULL,
+      level INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      knowledge_item_ids_json TEXT,
+      content TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (parent_node_id) REFERENCES feasibility_report_outline_nodes(node_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_feasibility_report_outline_parent_order
+    ON feasibility_report_outline_nodes(parent_node_id, sort_order);
+
+    CREATE INDEX IF NOT EXISTS idx_feasibility_report_outline_level
+    ON feasibility_report_outline_nodes(level);
+  `);
+}
+
 const schemaHealthTableGroups = [
   {
     version: 1,
@@ -962,7 +1101,6 @@ const schemaHealthTableGroups = [
   {
     version: 3,
     tables: [
-      'knowledge_migration_meta',
       'knowledge_folders',
       'knowledge_documents',
       'knowledge_blocks',
@@ -986,7 +1124,21 @@ const schemaHealthTableGroups = [
     tables: ['export_templates'],
     repair: createExportTemplatesSchema,
   },
+  {
+    version: 20,
+    tables: ['task_logs', 'technical_plan_illustration_plans', 'technical_plan_illustration_items'],
+    repair: createTaskLogsAndIllustrationItemsSchema,
+  },
+  {
+    version: 23,
+    tables: ['feasibility_report_meta', 'feasibility_report_tasks', 'feasibility_report_outline_nodes'],
+    repair: createFeasibilityReportSchema,
+  },
 ];
+
+function removeKnowledgeMigrationMeta(db) {
+  db.exec('DROP TABLE IF EXISTS knowledge_migration_meta;');
+}
 
 const schemaHealthColumnGroups = [
   {
@@ -1102,6 +1254,13 @@ const schemaHealthColumnGroups = [
     },
   },
   {
+    version: 22,
+    table: 'technical_plan_meta',
+    columns: {
+      global_facts_mode: "TEXT NOT NULL DEFAULT 'fabricate'",
+    },
+  },
+  {
     version: 14,
     table: 'technical_plan_meta',
     columns: {
@@ -1122,13 +1281,6 @@ const schemaHealthColumnGroups = [
     },
   },
   {
-    version: 17,
-    table: 'technical_plan_meta',
-    columns: {
-      content_illustration_plan_json: 'TEXT',
-    },
-  },
-  {
     version: 18,
     table: 'technical_plan_meta',
     columns: {
@@ -1138,6 +1290,14 @@ const schemaHealthColumnGroups = [
   },
   {
     version: 19,
+    table: 'technical_plan_outline_nodes',
+    columns: {
+      content_mode: 'TEXT',
+      content_mode_note: 'TEXT',
+    },
+  },
+  {
+    version: 24,
     table: 'technical_plan_meta',
     columns: {
       custom_outline_file_name: 'TEXT',
@@ -1304,6 +1464,31 @@ const migrations = [
   },
   {
     version: 19,
+    description: '技术方案目录叶子新增内容处理模式',
+    up: addTechnicalPlanOutlineContentMode,
+  },
+  {
+    version: 20,
+    description: '任务日志按行存储并拆分全文图片计划项目',
+    up: createTaskLogsAndIllustrationItemsSchema,
+  },
+  {
+    version: 21,
+    description: '移除废弃的知识库旧数据迁移状态',
+    up: removeKnowledgeMigrationMeta,
+  },
+  {
+    version: 22,
+    description: '技术方案新增全局事实补全模式',
+    up: addTechnicalPlanGlobalFactsMode,
+  },
+  {
+    version: 23,
+    description: '新增可行性研究报告工作区表结构',
+    up: createFeasibilityReportSchema,
+  },
+  {
+    version: 24,
     description: '技术方案新增自有大纲文件状态',
     up: addTechnicalPlanCustomOutline,
   },
@@ -1333,6 +1518,26 @@ function backupDatabaseFiles(db, databasePath, onStatus) {
   copyIfExists(databasePath, `${databasePath}.${suffix}`);
   copyIfExists(`${databasePath}-wal`, `${databasePath}-wal.${suffix}`);
   copyIfExists(`${databasePath}-shm`, `${databasePath}-shm.${suffix}`);
+}
+
+// 数据库升级成功后，统一删除当前数据库积累的全部历史备份。
+function clearDatabaseBackupFiles(databasePath) {
+  const directory = path.dirname(databasePath);
+  const databaseName = path.basename(databasePath);
+  const backupPrefixes = [
+    `${databaseName}.backup-`,
+    `${databaseName}-wal.backup-`,
+    `${databaseName}-shm.backup-`,
+  ];
+
+  for (const fileName of fs.readdirSync(directory)) {
+    if (!backupPrefixes.some((prefix) => fileName.startsWith(prefix))) continue;
+    try {
+      fs.unlinkSync(path.join(directory, fileName));
+    } catch (error) {
+      console.warn(`[sqlite] 删除数据库备份失败：${fileName}`, error?.message || String(error));
+    }
+  }
 }
 
 function applyMigrations(db, databasePath, onStatus) {
@@ -1373,6 +1578,7 @@ function applyMigrations(db, databasePath, onStatus) {
   }
 
   ensureWorkspaceSchemaHealth(db, schemaVersion, onStatus);
+  clearDatabaseBackupFiles(databasePath);
 }
 
 function createSqliteDatabase(app, options = {}) {
@@ -1383,7 +1589,12 @@ function createSqliteDatabase(app, options = {}) {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
-  applyMigrations(db, databasePath, options.onStatus);
+  try {
+    applyMigrations(db, databasePath, options.onStatus);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 
   const close = () => {
     if (db.open) {

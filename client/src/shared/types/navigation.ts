@@ -2,6 +2,7 @@ export type SectionId =
   | 'bid-generation'
   | 'technical-plan'
   | 'existing-plan-expansion'
+  | 'feasibility-report'
   | 'business-bid'
   | 'knowledge-base'
   | 'document-knowledge-base'
@@ -23,7 +24,8 @@ export type SectionId =
   | 'developer-export-preview'
   | 'developer-expansion-replace-test'
   | 'developer-agent-test'
-  | 'settings';
+  | 'settings'
+  | 'plugin-manager';
 
 export interface AppMenuNotice {
   message: string;
@@ -36,6 +38,7 @@ export interface AppSubMenuItem {
   label: string;
   description: string;
   icon?: 'document' | 'expand' | 'briefcase' | 'compare' | 'shield' | 'code' | 'prompt' | 'file' | 'export' | 'tool';
+  badge?: string;
   notice?: AppMenuNotice;
 }
 
