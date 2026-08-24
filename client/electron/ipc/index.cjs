@@ -16,6 +16,7 @@ const { registerFeasibilityReportIpc } = require('./feasibilityReportIpc.cjs');
 const { registerTemplateIpc } = require('./templateIpc.cjs');
 const { registerSystemFontIpc } = require('./systemFontIpc.cjs');
 const { registerPluginIpc } = require('./pluginIpc.cjs');
+const { registerPricePredictionIpc } = require('./pricePredictionIpc.cjs');
 const pluginService = require('../services/pluginService.cjs');
 const { createAgentService } = require('../services/agentService.cjs');
 const { createAiService } = require('../services/aiService.cjs');
@@ -34,6 +35,7 @@ const { createSqliteDatabase } = require('../services/sqliteDatabase.cjs');
 const { createSystemFontService } = require('../services/systemFontService.cjs');
 const { clearOrphanedGeneratedImages, clearStalePiTaskArchives, runHistoricalStorageCleanup } = require('../services/storageCleanupService.cjs');
 const { createTaskService } = require('../services/taskService.cjs');
+const { createPricePredictionService } = require('../services/pricePredictionService.cjs');
 const { createAgentWorkspaceService } = require('../services/agentWorkspaceService.cjs');
 const { createTaskLogStore } = require('../services/taskLogStore.cjs');
 const { createTechnicalPlanStore } = require('../services/technicalPlanStore.cjs');
@@ -257,6 +259,7 @@ function registerWorkspaceDatabaseServices({ app, configStore, aiService, agentS
   const templateStore = createTemplateStore({ db: sqliteDatabase.db });
   const duplicateCheckService = createDuplicateCheckService({ app, configStore, workspaceStore: duplicateCheckStore });
   const taskService = createTaskService({ aiService, agentService, autoConfirmationService, technicalPlanStore, rejectionCheckStore, duplicateCheckStore, feasibilityReportStore, knowledgeBaseService, duplicateCheckService });
+  const pricePredictionService = createPricePredictionService({ technicalPlanStore });
   const agentWorkspaceService = createAgentWorkspaceService({ agentService, taskService, technicalPlanStore, feasibilityReportStore });
   agentWorkspaceServiceRef = agentWorkspaceService;
   technicalPlanStore.setAgentWorkspaceChangeListener(() => agentWorkspaceService.emitWorkspacesChanged());
@@ -273,6 +276,7 @@ function registerWorkspaceDatabaseServices({ app, configStore, aiService, agentS
   registerRejectionCheckIpc({ rejectionCheckStore, taskService });
   registerTemplateIpc({ templateStore });
   registerTaskIpc({ taskService });
+  registerPricePredictionIpc({ pricePredictionService });
   updateStatus({ phase: 'ready', ready: true, message: '本地数据库已就绪' });
   
   // 更新 pluginService 的服务引用

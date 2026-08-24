@@ -253,6 +253,9 @@ const bridge = {
   systemFonts: {
     list: () => ipcRenderer.invoke('system-fonts:list'),
   },
+  pricePrediction: {
+    predict: () => ipcRenderer.invoke('price-prediction:predict'),
+  },
   plugins: {
     getAvailablePlugins: () => ipcRenderer.invoke('plugins:getAvailablePlugins'),
     install: (pluginId) => ipcRenderer.invoke('plugins:install', pluginId),

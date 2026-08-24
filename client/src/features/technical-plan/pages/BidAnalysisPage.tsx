@@ -4,7 +4,7 @@ import { trackConfigUsage } from '../../../shared/analytics/analytics';
 import { bidAnalysisTasks, getBidAnalysisTasks } from '../services/bidAnalysisWorkflow';
 import { MarkdownFullscreenViewer, MarkdownRenderer, ProgressBar, useToast } from '../../../shared/ui';
 import BidSectionSelectorDialog from '../components/BidSectionSelectorDialog';
-import type { BackgroundTaskState, BidAnalysisMode, BidAnalysisTasks, BidAnalysisTaskState, BidSectionExtractionStatus, BidSectionMode, DetectedBidSection, TechnicalPlanState } from '../types';
+import type { BackgroundTaskState, BidAnalysisMode, BidAnalysisTasks, BidAnalysisTaskState, BidSectionExtractionStatus, BidSectionMode, DetectedBidSection, PricePredictionResult, TechnicalPlanState } from '../types';
 
 interface BidAnalysisPageProps {
   hasTenderFile: boolean;
@@ -167,6 +167,13 @@ function formatJsonValue(value: unknown): string {
   return String(value);
 }
 
+function formatWanValue(value: number): string {
+  const wan = value.toLocaleString('zh-CN', { maximumFractionDigits: 1 });
+  return value >= 10000
+    ? `${wan} 万元（约 ${(value / 10000).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} 亿元）`
+    : `${wan} 万元`;
+}
+
 function JsonResultTable({ content }: { content: string }) {
   const data = tryParseJsonObject(content);
 
@@ -228,6 +235,8 @@ function BidAnalysisPage({
     nextTaskIds: string[];
   } | null>(null);
   const [progressCollapsed, setProgressCollapsed] = useState(false);
+  const [prediction, setPrediction] = useState<PricePredictionResult | null>(null);
+  const [predicting, setPredicting] = useState(false);
   const { showToast } = useToast();
   const effectiveSelectedTaskIds = useMemo(() => getSelectedTaskIdsForMode(mode, selectedTaskIds), [mode, selectedTaskIds]);
   const selectedTasks = useMemo(() => {
@@ -563,6 +572,29 @@ function BidAnalysisPage({
       ? selectedSectionTitle ? '更换' : '选择标段'
       : bidSectionExtractionStatus === 'error' ? '重新识别标段' : '识别标段';
 
+  const projectInfoReady = tasks.projectInfo?.status === 'success';
+  const runPrediction = async () => {
+    if (predicting) return;
+    try {
+      setPredicting(true);
+      const result = await window.yibiao?.pricePrediction.predict();
+      setPrediction(result || { success: false, message: '预测请求失败' });
+      if (result?.success) {
+        showToast('价格预测完成', 'success');
+      }
+    } catch (error) {
+      setPrediction({ success: false, message: error instanceof Error ? error.message : '预测请求失败' });
+    } finally {
+      setPredicting(false);
+    }
+  };
+  const predictionData = prediction?.success ? prediction.data : null;
+  const predictionAnchor = predictionData?.预算锚定 || null;
+  const predictionFeatures = predictionData?.推断特征
+    ? Object.entries(predictionData.推断特征).filter(([, value]) => value !== null && value !== undefined && value !== '' && value !== '未知')
+    : [];
+  const similarProjects = predictionData?.相似项目?.slice(0, 5) || [];
+
   return (
     <div className="plan-step-body bid-analysis-page">
       <section className="bid-analysis-command-bar">
@@ -678,6 +710,86 @@ function BidAnalysisPage({
               <strong>{activeTaskStatus === 'error' ? activeTaskState?.error || '解析失败' : '等待解析结果'}</strong>
               <p>{activeTaskStatus === 'idle' ? '点击开始解析后，左侧任务会并发运行；选择任一任务查看实时输出。' : '正在等待模型返回内容。'}</p>
             </div>
+          )}
+
+          {projectInfoReady && (
+            <section className="bid-analysis-prediction-card" aria-label="中标价格预测">
+              <div className="bid-analysis-prediction-head">
+                <div>
+                  <span className="section-kicker">辅助决策</span>
+                  <strong>中标价格预测</strong>
+                  <p>基于院内 2023-2026 年历史中标数据的本地模型估算，仅供报价参考。</p>
+                </div>
+                <button
+                  type="button"
+                  className="secondary-action"
+                  onClick={() => { void runPrediction(); }}
+                  disabled={predicting}
+                >
+                  {predicting ? '预测中...' : predictionData ? '重新预测' : '立即预测'}
+                </button>
+              </div>
+
+              {prediction && !prediction.success && (
+                <div className="bid-analysis-prediction-empty">
+                  <strong>{prediction.unavailable ? '预测服务未启动' : '暂无法预测'}</strong>
+                  <p>{prediction.message}</p>
+                </div>
+              )}
+
+              {predictionData && (
+                <div className="bid-analysis-prediction-body">
+                  <div className="bid-analysis-prediction-metrics">
+                    <div className="bid-analysis-prediction-metric is-primary">
+                      <span>预测中标价</span>
+                      <strong>{formatWanValue(predictionData.预测中标价_万元)}</strong>
+                    </div>
+                    <div className="bid-analysis-prediction-metric">
+                      <span>80% 置信区间</span>
+                      <strong>{`${predictionData.区间下限_万元.toLocaleString('zh-CN', { maximumFractionDigits: 1 })} ~ ${predictionData.区间上限_万元.toLocaleString('zh-CN', { maximumFractionDigits: 1 })} 万元`}</strong>
+                    </div>
+                    <div className="bid-analysis-prediction-metric">
+                      <span>建议报价上限</span>
+                      <strong>{formatWanValue(predictionData.建议报价上限_万元)}</strong>
+                    </div>
+                  </div>
+
+                  {predictionAnchor && (
+                    <p className="bid-analysis-prediction-anchor">
+                      {typeof predictionAnchor.锚定价_万元 === 'number'
+                        ? `已按预算 ${predictionAnchor.预算_万元.toLocaleString('zh-CN', { maximumFractionDigits: 1 })} 万元 × 折扣率 ${predictionAnchor.折扣率先验} 锚定（权重 ${predictionAnchor.权重}）`
+                        : `已识别预算 ${predictionAnchor.预算_万元.toLocaleString('zh-CN', { maximumFractionDigits: 1 })} 万元`}
+                      {predictionAnchor.说明 ? `；${predictionAnchor.说明}` : ''}
+                      {predictionAnchor.警告 ? `；${predictionAnchor.警告}` : ''}
+                    </p>
+                  )}
+
+                  {predictionFeatures.length > 0 && (
+                    <div className="bid-analysis-prediction-features">
+                      {predictionFeatures.map(([key, value]) => (
+                        <span key={key}>{`${key}：${String(value)}`}</span>
+                      ))}
+                    </div>
+                  )}
+
+                  {similarProjects.length > 0 && (
+                    <div className="bid-analysis-prediction-similar">
+                      <strong>最相似的历史项目</strong>
+                      <ul>
+                        {similarProjects.map((project) => (
+                          <li key={`${project.项目名称}-${project.开标日期 || ''}`}>
+                            <span className="bid-analysis-prediction-similar-name" title={project.项目名称}>{project.项目名称}</span>
+                            <span>{project.中标价_万元.toLocaleString('zh-CN', { maximumFractionDigits: 1 })} 万元</span>
+                            <span>{project.开标日期 || '—'}</span>
+                            {typeof project.相似度 === 'number' && <span>{`相似度 ${(project.相似度 * 100).toFixed(0)}%`}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
           )}
         </article>
       </section>
