@@ -74,7 +74,7 @@ function getModeLabel(mode: BidAnalysisMode) {
 
 const taskGroups = [
   { title: '关键项', ids: ['projectOverview', 'techRequirements', 'projectInfo', 'partAInfo', 'deliveryAndServiceRequirements', 'responseFileRequirements'] },
-  { title: '采购项', ids: ['procurementList'] },
+  { title: '采购项', ids: ['procurementList', 'priceScheduleFormat'] },
   { title: '投标流程', ids: ['keyInfo', 'marginInfo', 'openBid'] },
   { title: '评审要求', ids: ['qualificationReview', 'complianceCheck', 'evaluationBid', 'businessScoring'] },
   { title: '主体与合同', ids: ['agentInfo', 'discardedBids', 'signingProcess', 'terminationCondition'] },
@@ -144,6 +144,9 @@ const jsonFieldLabels: Record<string, string> = {
   response_time: '响应时限',
   training_requirements: '培训要求',
   documentation_requirements: '资料/文档交付要求',
+  found: '是否找到固定格式',
+  table_name: '表格名称',
+  columns: '列定义',
 };
 
 function tryParseJsonObject(content: string): Record<string, unknown> | null {

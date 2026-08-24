@@ -392,6 +392,73 @@ function createPricePredictionService({ app, db, technicalPlanStore }) {
     ];
   }
 
+  // ---- 分项报价明细表：优先套用招标文件的固定格式（「报价表格式」解析任务），否则用默认七列 ----
+
+  function loadPriceScheduleFormat() {
+    const plan = technicalPlanStore.loadTechnicalPlan() || {};
+    return parseJsonContent(plan.bidAnalysisTasks?.priceScheduleFormat?.content);
+  }
+
+  // 识别格式列能自动填什么；返回 null 表示需要人工填写（如品牌、产地、厂家）
+  function classifyFormatColumn(columnName) {
+    const name = String(columnName || '').replace(/\s/g, '');
+    if (!name) return null;
+    if (/序号/.test(name)) return 'index';
+    // 招标人的控制价/预算列不属于投标人填报内容，留空人工确认
+    if (/(预算金额|预算价|限价|控制价)/.test(name)) return null;
+    if (/(品名|货物名称|设备名称|材料名称|工作内容|采购内容)/.test(name)) return 'item_name';
+    if (/名称/.test(name) && !/(项目名称|单位名称|公司名称)/.test(name)) return 'item_name';
+    if (/(规格|型号|技术参数|参数|服务标准|配置)/.test(name)) return 'spec';
+    if (/单位/.test(name) && !/单位名称/.test(name)) return 'unit';
+    if (/数量/.test(name)) return 'quantity';
+    if (/单价/.test(name)) return 'price';
+    if (/(合价|总价|小计|金额)/.test(name)) return 'amount';
+    return null;
+  }
+
+  const FORMAT_KIND_FILLERS = {
+    index: (_item, i) => i + 1,
+    item_name: (item) => item.name,
+    spec: (item) => item.spec,
+    unit: (item) => item.unit,
+    quantity: (item) => (item.quantity === null || item.quantity === undefined ? '' : item.quantity),
+    price: (item) => item.price.toFixed(3),
+    amount: (item) => item.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+  };
+
+  function buildBidDetailRowsWithFormat(format, detailItems, totalYuan) {
+    const tableName = String(format?.table_name || '').trim() || '分项报价明细表';
+    const columnDefs = (Array.isArray(format?.columns) ? format.columns : [])
+      .map((col) => ({ name: String(col?.column_name || '').trim(), required: String(col?.is_required || '').includes('是') }))
+      .filter((col) => col.name);
+    const kinds = columnDefs.map((col) => classifyFormatColumn(col.name));
+
+    const rows = [
+      [tableName],
+      [],
+      columnDefs.map((col) => (col.required ? `*${col.name}` : col.name)),
+    ];
+    detailItems.forEach((item, i) => {
+      rows.push(columnDefs.map((_col, j) => {
+        const filler = kinds[j] ? FORMAT_KIND_FILLERS[kinds[j]] : null;
+        return filler ? (filler(item, i) ?? '') : '';
+      }));
+    });
+    const totalIdx = kinds.indexOf('amount');
+    rows.push(columnDefs.map((_col, j) => {
+      if (j === 0) return '总计';
+      if (j === totalIdx) return formatYuan(totalYuan);
+      return '—';
+    }));
+    rows.push([]);
+    const remarks = String(format?.remarks || '').trim();
+    if (remarks) rows.push(['填表说明', remarks]);
+    rows.push(['说明', `条目与数量来自招标文件采购清单解析；总报价为预测估算值，按${detailItems[0]?.estimatedBy === '限价占比' ? '清单限价占比' : '均摊'}分摊到各条目；空白列请按招标文件要求人工补充。`]);
+    rows.push(['盖章', '（电子公章）']);
+    rows.push(['制表日期', new Date().toLocaleDateString('zh-CN')]);
+    return rows;
+  }
+
   function buildBidDetailRows(detailItems, data) {
     const totalYuan = Math.round(data.预测中标价_万元 * 10000 * 100) / 100;
     const rows = [
@@ -449,14 +516,25 @@ function createPricePredictionService({ app, db, technicalPlanStore }) {
     summarySheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 1 } }];
     XLSX.utils.book_append_sheet(workbook, summarySheet, '投标报价一览表');
 
-    // Sheet2：分项报价明细表（条目来自采购清单解析，金额由预测总分摊估算）
+    // Sheet2：分项报价明细表——优先套招标文件固定格式，未识别到时退回默认七列
     const detailItems = allocateDetailRows(parseProcurementItems(procurementMarkdown), totalYuan);
-    const noteRowStart = 3 + detailItems.length + 2; // 标题+空行+表头+条目+总计 之后的第一行
-    const detailSheet = XLSX.utils.aoa_to_sheet(buildBidDetailRows(detailItems, result));
-    detailSheet['!cols'] = [{ wch: 6 }, { wch: 34 }, { wch: 30 }, { wch: 8 }, { wch: 8 }, { wch: 14 }, { wch: 16 }];
+    const scheduleFormat = loadPriceScheduleFormat();
+    const hasScheduleFormat = /(true|是)/i.test(String(scheduleFormat?.found || ''))
+      && Array.isArray(scheduleFormat?.columns)
+      && scheduleFormat.columns.some((col) => String(col?.column_name || '').trim());
+    const detailRows = hasScheduleFormat
+      ? buildBidDetailRowsWithFormat(scheduleFormat, detailItems, totalYuan)
+      : buildBidDetailRows(detailItems, result);
+    const colCount = Array.isArray(detailRows[2]) ? detailRows[2].length : 7;
+    const totalRowIndex = 3 + detailItems.length;
+    const detailSheet = XLSX.utils.aoa_to_sheet(detailRows);
+    detailSheet['!cols'] = Array.from({ length: colCount }, (_v, i) => ({ wch: i === 0 ? 8 : Math.max(12, Math.floor(90 / colCount)) }));
     detailSheet['!merges'] = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: 6 } },
-      ...[noteRowStart, noteRowStart + 1, noteRowStart + 2].map((r) => ({ s: { r, c: 0 }, e: { r, c: 5 } })),
+      { s: { r: 0, c: 0 }, e: { r: 0, c: colCount - 1 } },
+      ...Array.from({ length: detailRows.length - (totalRowIndex + 1) }, (_v, k) => {
+        const r = totalRowIndex + 1 + k;
+        return { s: { r, c: 0 }, e: { r, c: Math.max(1, colCount - 2) } };
+      }),
     ];
     XLSX.utils.book_append_sheet(workbook, detailSheet, '分项报价明细表');
 

@@ -139,6 +139,36 @@ export const bidAnalysisTasks: BidAnalysisTaskDefinition[] = [
 6. 只输出整理结果，不要输出分析过程。`,
   },
   {
+    id: 'priceScheduleFormat',
+    label: '报价表格式',
+    description: '招标文件规定的分项报价表固定格式列定义。',
+    required: false,
+    output: 'json',
+    buildTaskPrompt: () => `任务：提取招标文件、询比文件或采购文件中规定的投标报价表固定格式。
+
+请识别与“开标一览表、投标（报价）一览表、分项报价明细表、报价明细表、投标报价表、工程量清单报价表、分项价格表”等含义相近的固定格式表格模板（通常位于“投标文件格式”“响应文件格式”等格式附件章节，投标人必须按该格式填列，不得自行增减行列）。
+
+提取要求：
+1. 重点提取“分项报价明细表”（逐项列出品目、数量、单价、合价的明细表格）；若存在多个相似表格，取对填写分项报价最直接的一个。
+2. columns 数组严格按原文表格的列顺序输出，列名保留原文叫法，不要增删列、不要改列名。
+3. 每列标注 is_required（原文以 * 号、“必填”等标识的填“是”，否则填“否”）和 fill_instruction（这一列要求填写什么内容）。
+4. remarks 填写表底注意事项、填表说明（如盖章、必输项提醒）；没有则留空。
+5. 如果没有找到报价相关的固定格式表格，found 填 false，其他字段留空。
+6. 只输出 JSON，不要输出分析过程。
+
+JSON 格式：
+{
+  "found": "true 或 false",
+  "table_name": "报价明细表的表格名称",
+  "columns": [
+    {"column_name": "列名", "is_required": "是或否", "fill_instruction": "这一列要求填写的内容"}
+  ],
+  "remarks": "表底注意事项"
+}
+
+仅输出 JSON，不要输出其他内容。`,
+  },
+  {
     id: 'responseFileRequirements',
     label: '响应文件要求',
     description: '响应文件组成、格式模板、签章、递交和偏离表要求。',
