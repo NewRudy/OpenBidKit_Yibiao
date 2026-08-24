@@ -160,6 +160,15 @@
   border: 1px solid rgba(33, 116, 253, 0.22);
 }
 
+.price-prediction-metric small {
+  color: var(--yb-text-soft);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .price-prediction-metric span {
   color: var(--yb-text-muted);
   font-size: 12px;
@@ -182,6 +191,105 @@
   color: var(--yb-text-soft);
   font-size: 12px;
   line-height: 1.6;
+}
+
+/* 服务端警告与类比可靠性警示 */
+.price-prediction-alert {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+
+.price-prediction-alert p {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  border-radius: 8px;
+}
+
+.price-prediction-alert.is-warning p {
+  color: #92400e;
+  background: rgba(254, 243, 199, 0.75);
+  border: 1px solid rgba(217, 119, 6, 0.35);
+}
+
+.price-prediction-alert.is-low p {
+  color: #991b1b;
+  font-weight: 600;
+  background: rgba(254, 226, 226, 0.85);
+  border: 1px solid rgba(185, 28, 28, 0.35);
+}
+
+.price-prediction-alert.is-medium p {
+  color: #92400e;
+  background: rgba(254, 243, 199, 0.75);
+  border: 1px solid rgba(217, 119, 6, 0.35);
+}
+
+/* 同名历史标的强锚定高亮 */
+.price-prediction-same-anchor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  color: #065f46;
+  background: rgba(209, 250, 229, 0.7);
+  border: 1px solid rgba(5, 150, 105, 0.35);
+  border-radius: 10px;
+}
+
+.price-prediction-same-anchor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.price-prediction-same-anchor-head strong {
+  font-size: 13px;
+}
+
+.price-prediction-same-anchor-head em {
+  font-style: normal;
+  font-weight: 700;
+}
+
+.price-prediction-same-anchor ul {
+  margin: 0;
+  padding: 0 0 0 16px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* 预测逻辑链 */
+.price-prediction-logic-chain {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.price-prediction-logic-chain strong,
+.price-prediction-factors > strong {
+  font-size: 13px;
+}
+
+.price-prediction-logic-chain ol {
+  margin: 0;
+  padding: 0 0 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--yb-text-soft);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.price-prediction-factors {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .price-prediction-signals {

@@ -280,6 +280,7 @@ export default function PricePredictionPage() {
                   <div className="price-prediction-metric">
                     <span>80% 置信区间</span>
                     <strong>{`${data.区间下限_万元.toLocaleString('zh-CN', { maximumFractionDigits: 1 })} ~ ${data.区间上限_万元.toLocaleString('zh-CN', { maximumFractionDigits: 1 })} 万元`}</strong>
+                    {data.定价信号明细?.区间依据 && <small title={data.定价信号明细.区间依据}>{`依据：${data.定价信号明细.区间依据}`}</small>}
                   </div>
                   <div className="price-prediction-metric">
                     <span>建议报价上限</span>
@@ -287,6 +288,42 @@ export default function PricePredictionPage() {
                   </div>
                 </div>
 
+                {Array.isArray(data.警告) && data.警告.length > 0 && (
+                  <div className="price-prediction-alert is-warning">
+                    {data.警告.map((item, index) => <p key={index}>{`⚠️ ${item}`}</p>)}
+                  </div>
+                )}
+
+                {(() => {
+                  const reliability = data.类比可靠性;
+                  if (!reliability?.level || reliability.level === 'high') return null;
+                  return (
+                    <div className={`price-prediction-alert is-${reliability.level}`}>
+                      <p>
+                        {reliability.level === 'low' ? '⛔ 类比可靠性低：' : '⚠️ 类比可靠性中等：'}
+                        {reliability.原因 || '历史样本对本案支撑有限，请谨慎使用点估计。'}
+                      </p>
+                    </div>
+                  );
+                })()}
+
+                {(() => {
+                  const anchorInfo = data.定价信号明细?.同名锚点;
+                  if (!anchorInfo) return null;
+                  return (
+                    <div className="price-prediction-same-anchor">
+                      <div className="price-prediction-same-anchor-head">
+                        <strong>{anchorInfo.匹配 === '精确同名' ? '命中同名历史标的，直采其成交价' : '命中近似同名历史标的，强锚定'}</strong>
+                        <em>{typeof anchorInfo.价格中位_万元 === 'number' ? `${anchorInfo.价格中位_万元.toLocaleString('zh-CN', { maximumFractionDigits: 1 })} 万元` : ''}</em>
+                      </div>
+                      {Array.isArray(anchorInfo.历史成交) && anchorInfo.历史成交.length > 0 && (
+                        <ul>
+                          {anchorInfo.历史成交.map((item, index) => <li key={index}>{item}</li>)}
+                        </ul>
+                      )}
+                    </div>
+                  );
+                })()}
                 {anchor && (
                   <p className="price-prediction-anchor">
                     {typeof anchor.锚定价_万元 === 'number'
@@ -307,7 +344,7 @@ export default function PricePredictionPage() {
                   <div className="price-prediction-signals">
                     <div className="price-prediction-signals-head">
                       <strong>定价信号</strong>
-                      <em>{data.定价依据}</em>
+                      <em>{[data.定价依据, data.定价信号明细?.融合模式].filter(Boolean).join(' · ')}</em>
                     </div>
                     {(() => {
                       const signals = data.定价信号明细;
@@ -341,6 +378,31 @@ export default function PricePredictionPage() {
                         </ul>
                       );
                     })()}
+                  </div>
+                )}
+
+                {Array.isArray(data.预测逻辑链) && data.预测逻辑链.length > 0 && (
+                  <div className="price-prediction-logic-chain">
+                    <strong>预测逻辑链</strong>
+                    <ol>
+                      {data.预测逻辑链.map((step, index) => <li key={index}>{step}</li>)}
+                    </ol>
+                  </div>
+                )}
+
+                {Array.isArray(data.关键因子) && data.关键因子.length > 0 && (
+                  <div className="price-prediction-factors">
+                    <strong>关键因子</strong>
+                    <div className="price-prediction-features">
+                      {data.关键因子.map((factor, index) => (
+                        <span
+                          key={index}
+                          title={typeof factor.贡献log10 === 'number' ? `影响数量级约 10^${factor.贡献log10.toFixed(1)}` : undefined}
+                        >
+                          {`${factor.因子 || '未知因子'} ${String(factor.方向 || '')}`}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 )}
 

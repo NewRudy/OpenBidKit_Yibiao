@@ -268,6 +268,8 @@ function createPricePredictionService({ app, db, technicalPlanStore }) {
     }
     const signals = data.定价信号明细;
     if (signals && typeof signals === 'object') {
+      if (signals.融合模式) rows.push(['融合模式', signals.融合模式]);
+      if (signals.区间依据) rows.push(['区间依据', signals.区间依据]);
       const signalEntries = [
         ['联合模型', signals.联合模型_万元],
         ['台账类比', signals.台账类比_万元],
@@ -278,6 +280,24 @@ function createPricePredictionService({ app, db, technicalPlanStore }) {
         const weightKey = Object.keys(weights).find((key) => key.startsWith(name));
         rows.push([`定价信号-${name}（万元）`, weightKey ? `${value}（权重 ${weights[weightKey]}）` : value]);
       }
+      const sameName = signals.同名锚点;
+      if (sameName && typeof sameName === 'object') {
+        rows.push(['同名锚点', `${sameName.匹配 || '同名'}：中位 ${sameName.价格中位_万元 ?? '—'} 万元${Array.isArray(sameName.历史成交) ? `（${sameName.历史成交.join('；')}）` : ''}`]);
+      }
+    }
+    if (data.类比可靠性?.level) {
+      rows.push(['类比可靠性', `${data.类比可靠性.level}${data.类比可靠性.原因 ? `（${data.类比可靠性.原因}）` : ''}`]);
+    }
+    if (Array.isArray(data.预测逻辑链) && data.预测逻辑链.length) {
+      for (const [i, step] of data.预测逻辑链.entries()) {
+        rows.push([i === 0 ? '预测逻辑链' : '', `${i + 1}. ${step}`]);
+      }
+    }
+    if (Array.isArray(data.关键因子) && data.关键因子.length) {
+      rows.push(['关键因子', data.关键因子.map((f) => `${f.因子 || '未知'} ${f.方向 || ''}`.trim()).join('；')]);
+    }
+    if (Array.isArray(data.警告) && data.警告.length) {
+      rows.push(['警告', data.警告.join('；')]);
     }
     if (actual.actualWonPriceWan !== null && actual.actualWonPriceWan !== undefined) {
       rows.push(['实际中标价（万元，开标回填）', actual.actualWonPriceWan]);

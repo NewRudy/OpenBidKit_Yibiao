@@ -22,12 +22,35 @@ export interface PricePredictionSimilarProject {
   相似度?: number;
 }
 
+// 同名历史标的强锚定信息（服务端 v1.5+）
+export interface PricePredictionSameNameAnchor {
+  价格中位_万元?: number;
+  历史成交?: string[];
+  匹配?: string;
+  权重?: number;
+  价格一致?: boolean;
+}
+
 // 融合定价的分路信号（服务端 v1.4+「模型+双池类比」），契约仍在演进，字段宽松处理
 export interface PricePredictionSignalDetail {
   联合模型_万元?: number;
   台账类比_万元?: number;
   市场类比_万元?: number;
   权重?: Record<string, number>;
+  融合模式?: string;
+  同名锚点?: PricePredictionSameNameAnchor | null;
+  区间依据?: string;
+}
+
+export interface PricePredictionReliability {
+  level?: 'high' | 'medium' | 'low' | string;
+  原因?: string;
+}
+
+export interface PricePredictionKeyFactor {
+  因子?: string;
+  方向?: string;
+  贡献log10?: number;
 }
 
 export interface PricePredictionData {
@@ -37,6 +60,10 @@ export interface PricePredictionData {
   建议报价上限_万元: number;
   定价依据?: string;
   定价信号明细?: PricePredictionSignalDetail;
+  类比可靠性?: PricePredictionReliability;
+  预测逻辑链?: string[];
+  关键因子?: PricePredictionKeyFactor[];
+  警告?: string[] | null;
   预算锚定?: {
     预算_万元: number;
     折扣率先验?: number;
