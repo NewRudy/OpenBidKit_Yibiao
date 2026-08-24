@@ -903,3 +903,19 @@ ON feasibility_report_outline_nodes(parent_node_id, sort_order);
 
 CREATE INDEX IF NOT EXISTS idx_feasibility_report_outline_level
 ON feasibility_report_outline_nodes(level);
+
+CREATE TABLE IF NOT EXISTS price_prediction_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_name TEXT NOT NULL,
+  request_json TEXT NOT NULL,
+  result_json TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'manual',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_price_prediction_runs_created
+ON price_prediction_runs(created_at);
+
+-- v26: 价格预测历史回填字段
+ALTER TABLE price_prediction_runs ADD COLUMN actual_won_price_wan REAL;
+ALTER TABLE price_prediction_runs ADD COLUMN actual_bid_price_wan REAL;

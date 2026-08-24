@@ -1,0 +1,399 @@
+/* 中标价格预测独立流程页（本地预测服务，未启动时仅提示） */
+.price-prediction-page {
+  display: grid;
+  gap: 18px;
+}
+
+.price-prediction-command-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px 24px;
+  background: var(--yb-surface, #fff);
+  border: 1px solid var(--yb-border-soft);
+  border-radius: var(--yb-radius-lg);
+}
+
+.price-prediction-command-bar strong {
+  display: block;
+  margin: 7px 0;
+  color: var(--yb-text);
+  font-size: 22px;
+  letter-spacing: -0.02em;
+}
+
+.price-prediction-command-bar p {
+  margin: 0;
+  color: var(--yb-text-soft);
+  font-size: 13px;
+  line-height: 1.7;
+  max-width: 720px;
+}
+
+.price-prediction-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 18px;
+  min-height: 0;
+}
+
+.price-prediction-main {
+  display: grid;
+  gap: 18px;
+  align-content: start;
+  min-width: 0;
+}
+
+.price-prediction-panel {
+  display: grid;
+  gap: 16px;
+  padding: 18px 20px;
+  background: var(--yb-surface, #fff);
+  border: 1px solid var(--yb-border-soft);
+  border-radius: var(--yb-radius-lg);
+}
+
+.price-prediction-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.price-prediction-panel-head strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--yb-text);
+  font-size: 17px;
+}
+
+.price-prediction-panel-head > div:first-child span {
+  display: block;
+}
+
+.price-prediction-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.price-prediction-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.price-prediction-form label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.price-prediction-form label > span {
+  color: var(--yb-text-soft);
+  font-size: 12px;
+}
+
+.price-prediction-form input {
+  width: 100%;
+  padding: 9px 12px;
+  color: var(--yb-text);
+  font-size: 13px;
+  background: rgba(248, 250, 253, 0.86);
+  border: 1px solid var(--yb-border-soft);
+  border-radius: var(--yb-radius-md);
+  outline: none;
+  transition: border-color var(--yb-duration-fast) ease, box-shadow var(--yb-duration-fast) ease;
+}
+
+.price-prediction-form input:focus {
+  border-color: rgba(33, 116, 253, 0.5);
+  box-shadow: 0 0 0 3px rgba(33, 116, 253, 0.1);
+}
+
+.price-prediction-hint {
+  margin: 0;
+  color: var(--yb-text-muted);
+  font-size: 12px;
+}
+
+.price-prediction-empty {
+  display: grid;
+  gap: 4px;
+  padding: 18px;
+  border-radius: var(--yb-radius-md);
+  background: rgba(248, 250, 253, 0.8);
+  border: 1px dashed var(--yb-border-soft);
+}
+
+.price-prediction-empty strong {
+  color: var(--yb-text);
+  font-size: 13px;
+}
+
+.price-prediction-empty p {
+  margin: 0;
+  color: var(--yb-text-muted);
+  font-size: 12px;
+}
+
+.price-prediction-result {
+  display: grid;
+  gap: 12px;
+}
+
+.price-prediction-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.price-prediction-metric {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  min-width: 0;
+  padding: 12px;
+  border-radius: var(--yb-radius-md);
+  background: rgba(33, 116, 253, 0.05);
+  border: 1px solid rgba(33, 116, 253, 0.22);
+}
+
+.price-prediction-metric span {
+  color: var(--yb-text-muted);
+  font-size: 12px;
+}
+
+.price-prediction-metric strong {
+  color: var(--yb-text);
+  font-size: 15px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.price-prediction-metric.is-primary strong {
+  color: var(--yb-primary);
+  font-size: 18px;
+}
+
+.price-prediction-anchor {
+  margin: 0;
+  color: var(--yb-text-soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.price-prediction-features {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.price-prediction-features span {
+  padding: 3px 10px;
+  color: var(--yb-text-soft);
+  font-size: 12px;
+  background: rgba(248, 250, 253, 0.86);
+  border: 1px solid var(--yb-border-soft);
+  border-radius: 999px;
+}
+
+.price-prediction-similar {
+  display: grid;
+  gap: 8px;
+}
+
+.price-prediction-similar > strong {
+  color: var(--yb-text);
+  font-size: 13px;
+}
+
+.price-prediction-similar ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.price-prediction-similar li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 12px;
+  font-size: 12px;
+  color: var(--yb-text-soft);
+  background: rgba(248, 250, 253, 0.7);
+  border: 1px solid var(--yb-border-soft);
+  border-radius: var(--yb-radius-md);
+}
+
+.price-prediction-similar-name {
+  overflow: hidden;
+  color: var(--yb-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.price-prediction-history {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  align-content: start;
+  padding: 18px 20px;
+  background: var(--yb-surface, #fff);
+  border: 1px solid var(--yb-border-soft);
+  border-radius: var(--yb-radius-lg);
+  min-height: 0;
+}
+
+.price-prediction-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.price-prediction-history-head strong {
+  color: var(--yb-text);
+  font-size: 15px;
+}
+
+.price-prediction-history-head span {
+  color: var(--yb-text-muted);
+  font-size: 12px;
+}
+
+.price-prediction-history-empty {
+  margin: 0;
+  color: var(--yb-text-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.price-prediction-history-list {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.price-prediction-history-item {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  text-align: left;
+  background: rgba(248, 250, 253, 0.7);
+  border: 1px solid var(--yb-border-soft);
+  border-radius: var(--yb-radius-md);
+  cursor: pointer;
+  transition: border-color var(--yb-duration-fast) ease, background var(--yb-duration-fast) ease;
+}
+
+.price-prediction-history-item:hover {
+  background: rgba(33, 116, 253, 0.06);
+  border-color: rgba(33, 116, 253, 0.34);
+}
+
+.price-prediction-history-item strong {
+  overflow: hidden;
+  color: var(--yb-text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.price-prediction-history-item small {
+  color: var(--yb-text-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 1100px) {
+  .price-prediction-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .price-prediction-form,
+  .price-prediction-metrics {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 开标结果回填 */
+.price-prediction-actual {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  background: rgba(248, 250, 253, 0.7);
+  border: 1px dashed var(--yb-border-soft);
+  border-radius: var(--yb-radius-md);
+}
+
+.price-prediction-actual-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.price-prediction-actual-head strong {
+  color: var(--yb-text);
+  font-size: 13px;
+}
+
+.price-prediction-actual-head em {
+  padding: 2px 8px;
+  color: #1a7f37;
+  font-size: 11px;
+  font-style: normal;
+  background: rgba(26, 127, 55, 0.1);
+  border-radius: 999px;
+}
+
+.price-prediction-actual-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.price-prediction-actual-form label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.price-prediction-actual-form label > span {
+  color: var(--yb-text-soft);
+  font-size: 12px;
+}
+
+.price-prediction-actual-form input {
+  width: 100%;
+  padding: 8px 12px;
+  color: var(--yb-text);
+  font-size: 13px;
+  background: #ffffff;
+  border: 1px solid var(--yb-border-soft);
+  border-radius: var(--yb-radius-md);
+  outline: none;
+}
+
+.price-prediction-actual-form input:focus {
+  border-color: rgba(33, 116, 253, 0.5);
+  box-shadow: 0 0 0 3px rgba(33, 116, 253, 0.1);
+}
+
+.price-prediction-history-item.is-backfilled strong::after {
+  content: '✓';
+  margin-left: 6px;
+  color: #1a7f37;
+  font-size: 12px;
+}
+
+@media (max-width: 1100px) {
+  .price-prediction-actual-form {
+    grid-template-columns: 1fr;
+  }
+}

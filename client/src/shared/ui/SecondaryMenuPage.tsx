@@ -112,6 +112,15 @@ function SubMenuIcon({ item }: { item: AppSubMenuItem }) {
           <path d="M10.5 12.3v1.8h3v-1.8" />
         </svg>
       );
+    case 'chart':
+      return (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+          <path d="M4 20.2h16" />
+          <path d="M7 20.2v-6" />
+          <path d="M12 20.2V8.5" />
+          <path d="M17 20.2V4.5" />
+        </svg>
+      );
     case 'compare':
       return (
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">

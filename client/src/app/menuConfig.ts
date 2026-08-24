@@ -38,6 +38,12 @@ export const appMenuItems: AppMenuItem[] = [
         icon: 'briefcase',
         notice: githubStarNotice,
       },
+      {
+        id: 'price-prediction',
+        label: '中标价格预测',
+        description: '基于院内历史中标数据预测中标价并导出预算表',
+        icon: 'chart',
+      },
     ],
   },
   {

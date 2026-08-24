@@ -17,6 +17,7 @@ const navigationIcons: Record<SectionId, ComponentType<SVGProps<SVGSVGElement>>>
   'existing-plan-expansion': DocumentIcon,
   'feasibility-report': DocumentIcon,
   'business-bid': BriefcaseIcon,
+  'price-prediction': ChartIcon,
   'knowledge-base': ArchiveIcon,
   'document-knowledge-base': ArchiveIcon,
   'image-knowledge-base': ArchiveIcon,
@@ -210,6 +211,18 @@ function DocumentIcon(props: SVGProps<SVGSVGElement>) {
       <path d="M13.5 4v4.35h4.25" />
       <path d="M9.5 12.2h5" />
       <path d="M9.5 15.7h4" />
+    </svg>
+  );
+}
+
+function ChartIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
+      <path d="M3 21h18" />
+      <path d="M6 17v-6" />
+      <path d="M11 17V7" />
+      <path d="M16 17v-9" />
+      <path d="M21 17V4" />
     </svg>
   );
 }

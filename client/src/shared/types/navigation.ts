@@ -4,6 +4,7 @@ export type SectionId =
   | 'existing-plan-expansion'
   | 'feasibility-report'
   | 'business-bid'
+  | 'price-prediction'
   | 'knowledge-base'
   | 'document-knowledge-base'
   | 'image-knowledge-base'
@@ -37,7 +38,7 @@ export interface AppSubMenuItem {
   id: SectionId;
   label: string;
   description: string;
-  icon?: 'document' | 'expand' | 'briefcase' | 'compare' | 'shield' | 'code' | 'prompt' | 'file' | 'export' | 'tool';
+  icon?: 'document' | 'expand' | 'briefcase' | 'compare' | 'shield' | 'code' | 'prompt' | 'file' | 'export' | 'tool' | 'chart';
   badge?: string;
   notice?: AppMenuNotice;
 }

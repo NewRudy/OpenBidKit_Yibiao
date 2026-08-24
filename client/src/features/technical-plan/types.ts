@@ -392,37 +392,3 @@ export interface TechnicalPlanState {
   outlineData: OutlineData | null;
 }
 
-export interface PricePredictionSimilarProject {
-  项目名称: string;
-  业务类型?: string;
-  能源类型?: string;
-  中标价_万元: number;
-  开标日期?: string;
-  省份?: string;
-  相似度?: number;
-}
-
-export interface PricePredictionData {
-  预测中标价_万元: number;
-  区间下限_万元: number;
-  区间上限_万元: number;
-  建议报价上限_万元: number;
-  预算锚定?: {
-    预算_万元: number;
-    折扣率先验?: number;
-    锚定价_万元?: number;
-    权重?: number;
-    警告?: string;
-    说明?: string;
-  } | null;
-  推断特征?: Record<string, string | number | null>;
-  相似项目: PricePredictionSimilarProject[];
-}
-
-export interface PricePredictionResult {
-  success: boolean;
-  unavailable?: boolean;
-  message?: string;
-  request?: { 项目名称: string; project_budget?: string; project_address?: string; company_name?: string };
-  data?: PricePredictionData;
-}

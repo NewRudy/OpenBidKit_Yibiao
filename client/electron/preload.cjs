@@ -255,7 +255,11 @@ const bridge = {
     list: () => ipcRenderer.invoke('system-fonts:list'),
   },
   pricePrediction: {
-    predict: () => ipcRenderer.invoke('price-prediction:predict'),
+    getSourceFields: () => ipcRenderer.invoke('price-prediction:get-source-fields'),
+    predict: (fields) => ipcRenderer.invoke('price-prediction:predict', fields),
+    listRuns: () => ipcRenderer.invoke('price-prediction:list-runs'),
+    exportBudgetTable: (payload) => ipcRenderer.invoke('price-prediction:export-budget', payload),
+    updateRunActual: (runId, payload) => ipcRenderer.invoke('price-prediction:update-run-actual', runId, payload),
   },
   plugins: {
     getAvailablePlugins: () => ipcRenderer.invoke('plugins:getAvailablePlugins'),

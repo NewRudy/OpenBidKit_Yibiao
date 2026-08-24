@@ -3,7 +3,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const { getWorkspaceDatabasePath } = require('../utils/paths.cjs');
 
-const schemaVersion = 24;
+const schemaVersion = 26;
 
 function createInitialSchema(db) {
   db.exec(`
@@ -998,6 +998,29 @@ function createExportTemplatesSchema(db) {
   `);
 }
 
+function createPricePredictionSchema(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS price_prediction_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_name TEXT NOT NULL,
+      request_json TEXT NOT NULL,
+      result_json TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'manual',
+      created_at TEXT NOT NULL,
+      actual_won_price_wan REAL,
+      actual_bid_price_wan REAL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_price_prediction_runs_created
+    ON price_prediction_runs(created_at);
+  `);
+}
+
+function addPricePredictionActualColumns(db) {
+  addColumnIfMissing(db, 'price_prediction_runs', 'actual_won_price_wan', 'REAL');
+  addColumnIfMissing(db, 'price_prediction_runs', 'actual_bid_price_wan', 'REAL');
+}
+
 function createFeasibilityReportSchema(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS feasibility_report_meta (
@@ -1133,6 +1156,11 @@ const schemaHealthTableGroups = [
     version: 23,
     tables: ['feasibility_report_meta', 'feasibility_report_tasks', 'feasibility_report_outline_nodes'],
     repair: createFeasibilityReportSchema,
+  },
+  {
+    version: 25,
+    tables: ['price_prediction_runs'],
+    repair: createPricePredictionSchema,
   },
 ];
 
@@ -1306,6 +1334,14 @@ const schemaHealthColumnGroups = [
       custom_outline_markdown_chars: 'INTEGER NOT NULL DEFAULT 0',
       custom_outline_parser_label: 'TEXT',
       custom_outline_imported_at: 'TEXT',
+    },
+  },
+  {
+    version: 26,
+    table: 'price_prediction_runs',
+    columns: {
+      actual_won_price_wan: 'REAL',
+      actual_bid_price_wan: 'REAL',
     },
   },
 ];
@@ -1491,6 +1527,16 @@ const migrations = [
     version: 24,
     description: '技术方案新增自有大纲文件状态',
     up: addTechnicalPlanCustomOutline,
+  },
+  {
+    version: 25,
+    description: '新增中标价格预测历史记录表',
+    up: createPricePredictionSchema,
+  },
+  {
+    version: 26,
+    description: '价格预测历史新增开标实际结果回填字段',
+    up: addPricePredictionActualColumns,
   },
 ];
 
