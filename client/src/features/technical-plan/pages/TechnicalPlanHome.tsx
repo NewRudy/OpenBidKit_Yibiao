@@ -1337,6 +1337,7 @@ function TechnicalPlanHome({ workflowKind, registerLeaveGuard, onSectionChange }
           <OutlineEditPage
             workflowKind={workflowKind}
             projectOverview={state.projectOverview}
+            outlineMode={state.outlineMode}
             outlineExpansionMode={state.outlineExpansionMode || 'ai-complement'}
             customOutlineFile={state.customOutlineFile}
           outlineWordControlOptions={state.outlineWordControlOptions}

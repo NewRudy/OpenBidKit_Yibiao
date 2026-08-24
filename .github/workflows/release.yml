@@ -102,25 +102,38 @@ jobs:
           cache: npm
           cache-dependency-path: client/package-lock.json
 
+      - name: Cache Electron build downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: ${{ runner.os }}-x64-electron-${{ hashFiles('client/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-x64-electron-
+
+      - name: Cache Open XML helper
+        id: cache-openxml-helper
+        uses: actions/cache@v4
+        with:
+          path: client/vendor/openxml-tools/win32-x64
+          key: ${{ runner.os }}-x64-openxml-${{ hashFiles('openxmlhelper/**/*', 'client/scripts/prepare-openxml-helper.cjs') }}
+
       - name: Setup .NET
+        if: steps.cache-openxml-helper.outputs.cache-hit != 'true'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --prefer-offline --no-audit --no-fund
 
       - name: Verify Agent tools
         run: node scripts/verify-agent-tools.cjs --platform win32 --arch x64
 
       - name: Publish Open XML helper
+        if: steps.cache-openxml-helper.outputs.cache-hit != 'true'
         run: node scripts/prepare-openxml-helper.cjs --platform win32 --arch x64
-
-      - name: Install build type dependencies
-        run: npm install --no-save @types/plist
-
-      - name: Rebuild Electron native dependencies
-        run: npm run postinstall
 
       - name: Smoke test Electron native dependencies
         run: npm run smoke:electron-native
@@ -147,10 +160,10 @@ jobs:
         run: npm run build
 
       - name: Build Windows NSIS and ZIP artifacts
-        run: npx electron-builder --win nsis zip --publish never
+        run: npx electron-builder --win nsis zip --publish never -c.npmRebuild=false
 
       - name: Build Windows MSI artifact
-        run: npx electron-builder --win msi --publish never -c.productName=OpenBidKit_Yibiao -c.extraMetadata.author=mark -c.copyright="Copyright (c) 2026 mark"
+        run: npx electron-builder --win msi --publish never -c.npmRebuild=false -c.productName=OpenBidKit_Yibiao -c.extraMetadata.author=mark -c.copyright="Copyright (c) 2026 mark"
 
       - name: Verify packaged Agent tools
         run: node scripts/verify-packaged-agent-tools.cjs --platform win32 --arch x64 --release release
@@ -199,11 +212,6 @@ jobs:
           cache: npm
           cache-dependency-path: client/package-lock.json
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-
       - name: Verify runner architecture
         run: |
           actual_arch="$(node -p process.arch)"
@@ -222,20 +230,28 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.arch }}-electron-
 
+      - name: Cache Open XML helper
+        id: cache-openxml-helper
+        uses: actions/cache@v4
+        with:
+          path: client/vendor/openxml-tools/darwin-${{ matrix.arch }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-openxml-${{ hashFiles('openxmlhelper/**/*', 'client/scripts/prepare-openxml-helper.cjs') }}
+
+      - name: Setup .NET
+        if: steps.cache-openxml-helper.outputs.cache-hit != 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --prefer-offline --no-audit --no-fund
 
       - name: Verify Agent tools
         run: node scripts/verify-agent-tools.cjs --platform darwin --arch ${{ matrix.arch }}
 
       - name: Publish Open XML helper
+        if: steps.cache-openxml-helper.outputs.cache-hit != 'true'
         run: node scripts/prepare-openxml-helper.cjs --platform darwin --arch ${{ matrix.arch }}
-
-      - name: Install build type dependencies
-        run: npm install --no-save @types/plist
-
-      - name: Rebuild Electron native dependencies
-        run: npm run postinstall
 
       - name: Smoke test Electron native dependencies
         run: npm run smoke:electron-native
@@ -304,7 +320,7 @@ jobs:
 
           for attempt in 1 2 3; do
             echo "Build macOS ${{ matrix.arch }} artifacts, attempt ${attempt}/3."
-            if npx electron-builder --mac dmg:${{ matrix.arch }} zip:${{ matrix.arch }} --publish never; then
+            if npx electron-builder --mac dmg:${{ matrix.arch }} zip:${{ matrix.arch }} --publish never -c.npmRebuild=false; then
               exit 0
             fi
 
@@ -321,15 +337,28 @@ jobs:
       - name: Verify packaged Agent tools
         run: node scripts/verify-packaged-agent-tools.cjs --platform darwin --arch ${{ matrix.arch }} --release release
 
-      - name: Stage macOS release assets
+      - name: Upload macOS release assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ inputs.tag_name || github.ref_name }}
+        run: |
+          shopt -s nullglob
+          dmgs=(release/*-mac-${{ matrix.arch }}.dmg)
+          zips=(release/*-mac-${{ matrix.arch }}.zip)
+          blockmaps=(release/*.blockmap)
+
+          if [ ${#dmgs[@]} -ne 1 ] || [ ${#zips[@]} -ne 1 ]; then
+            echo "Expected exactly one macOS ${{ matrix.arch }} DMG and ZIP."
+            exit 1
+          fi
+
+          gh release upload "$TAG_NAME" "${dmgs[@]}" "${zips[@]}" "${blockmaps[@]}" --clobber
+
+      - name: Stage macOS update manifest
         uses: actions/upload-artifact@v4
         with:
           name: macos-${{ matrix.arch }}
-          path: |
-            client/release/*.dmg
-            client/release/*.zip
-            client/release/*.blockmap
-            client/release/*-mac.yml
+          path: client/release/*-mac.yml
           if-no-files-found: error
 
   publish-macos:
@@ -354,25 +383,20 @@ jobs:
 
       - name: Install manifest tooling
         working-directory: client
-        run: npm ci --ignore-scripts --omit=optional
+        run: npm ci --ignore-scripts --omit=optional --prefer-offline --no-audit --no-fund
 
-      - name: Download macOS x64 artifacts
+      - name: Download macOS update manifests
         uses: actions/download-artifact@v4
         with:
-          name: macos-x64
-          path: artifacts/x64
-
-      - name: Download macOS arm64 artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: macos-arm64
-          path: artifacts/arm64
+          pattern: macos-*
+          path: artifacts
+          merge-multiple: false
 
       - name: Merge macOS update manifests
         run: |
           shopt -s nullglob
-          x64_manifests=(artifacts/x64/*-mac.yml)
-          arm64_manifests=(artifacts/arm64/*-mac.yml)
+          x64_manifests=(artifacts/macos-x64/*-mac.yml)
+          arm64_manifests=(artifacts/macos-arm64/*-mac.yml)
 
           if [ ${#x64_manifests[@]} -ne 1 ] || [ ${#arm64_manifests[@]} -ne 1 ]; then
             echo "Expected exactly one macOS update manifest for each architecture."
@@ -390,38 +414,18 @@ jobs:
             "${arm64_manifests[0]}" \
             "artifacts/$manifest_name"
 
-      - name: Upload macOS release assets
+      - name: Upload merged macOS update manifest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ inputs.tag_name || github.ref_name }}
         run: |
           shopt -s nullglob
-
-          require_single_asset() {
-            local label="$1"
-            shift
-            if [ "$#" -ne 1 ]; then
-              echo "Expected exactly one ${label}, found $#."
-              exit 1
-            fi
-          }
-
-          require_single_asset "macOS x64 DMG" artifacts/x64/*-mac-x64.dmg
-          require_single_asset "macOS x64 update ZIP" artifacts/x64/*-mac-x64.zip
-          require_single_asset "macOS arm64 DMG" artifacts/arm64/*-mac-arm64.dmg
-          require_single_asset "macOS arm64 update ZIP" artifacts/arm64/*-mac-arm64.zip
-          require_single_asset "merged macOS update manifest" artifacts/*-mac.yml
-
-          files=(
-            artifacts/x64/*.dmg
-            artifacts/x64/*.zip
-            artifacts/x64/*.blockmap
-            artifacts/arm64/*.dmg
-            artifacts/arm64/*.zip
-            artifacts/arm64/*.blockmap
-            artifacts/*-mac.yml
-          )
-          gh release upload "$TAG_NAME" "${files[@]}" --clobber
+          manifests=(artifacts/*-mac.yml)
+          if [ ${#manifests[@]} -ne 1 ]; then
+            echo "Expected exactly one merged macOS update manifest."
+            exit 1
+          fi
+          gh release upload "$TAG_NAME" "${manifests[@]}" --clobber
 
   publish-atomgit-release:
     name: Publish AtomGit Release

@@ -302,6 +302,7 @@
 .knowledge-empty-box {
   position: relative;
   display: grid;
+  align-content: start;
   gap: 12px;
   padding: 14px;
   background: var(--yb-bg);
