@@ -7,6 +7,7 @@ const EMPTY_FIELDS: PricePredictionRequestFields = {
   project_budget: '',
   project_address: '',
   company_name: '',
+  容量MW: '',
 };
 
 function formatWanValue(value: number): string {
@@ -214,6 +215,15 @@ export default function PricePredictionPage() {
                 />
               </label>
               <label>
+                <span>装机容量 MW（可选，能源类项目）</span>
+                <input
+                  inputMode="decimal"
+                  value={fields.容量MW || ''}
+                  onChange={(event) => updateField('容量MW', event.target.value)}
+                  placeholder="如 150；填写后类比范围更窄、区间更小"
+                />
+              </label>
+              <label>
                 <span>项目地址（可选）</span>
                 <input
                   value={fields.project_address || ''}
@@ -281,6 +291,17 @@ export default function PricePredictionPage() {
                     <span>80% 置信区间</span>
                     <strong>{`${data.区间下限_万元.toLocaleString('zh-CN', { maximumFractionDigits: 1 })} ~ ${data.区间上限_万元.toLocaleString('zh-CN', { maximumFractionDigits: 1 })} 万元`}</strong>
                     {data.定价信号明细?.区间依据 && <small title={data.定价信号明细.区间依据}>{`依据：${data.定价信号明细.区间依据}`}</small>}
+                  </div>
+                  <div className="price-prediction-metric">
+                    <span>典型成交带 P25~P75</span>
+                    {typeof data.核心区间下限_万元 === 'number' && typeof data.核心区间上限_万元 === 'number' ? (
+                      <>
+                        <strong>{`${data.核心区间下限_万元.toLocaleString('zh-CN', { maximumFractionDigits: 1 })} ~ ${data.核心区间上限_万元.toLocaleString('zh-CN', { maximumFractionDigits: 1 })} 万元`}</strong>
+                        <small>约半数同类项目真实成交落在其中，建议以此带为主参考</small>
+                      </>
+                    ) : (
+                      <small>本次按预算纯锚定定价（与模型分歧较大），无模型分位带</small>
+                    )}
                   </div>
                   <div className="price-prediction-metric">
                     <span>建议报价上限</span>

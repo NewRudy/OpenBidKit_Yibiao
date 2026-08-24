@@ -4,6 +4,8 @@ export interface PricePredictionRequestFields {
   project_budget?: string;
   project_address?: string;
   company_name?: string;
+  /** 装机容量（MW），能源类项目选填；字段越全预测区间越窄，服务端按中文键「容量MW」识别 */
+  容量MW?: string;
 }
 
 export interface PricePredictionSource {
@@ -57,6 +59,9 @@ export interface PricePredictionData {
   预测中标价_万元: number;
   区间下限_万元: number;
   区间上限_万元: number;
+  /** v2.1：P25~P75 条件分位带（约半数同类项目真实成交落在其中），为主参考；预算被否决走纯锚定时为 null */
+  核心区间下限_万元?: number | null;
+  核心区间上限_万元?: number | null;
   建议报价上限_万元: number;
   定价依据?: string;
   定价信号明细?: PricePredictionSignalDetail;

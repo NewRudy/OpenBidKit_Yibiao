@@ -138,12 +138,15 @@ function createPricePredictionService({ app, db, technicalPlanStore }) {
       project_budget: cleanFieldValue(raw?.project_budget),
       project_address: cleanFieldValue(raw?.project_address),
       company_name: cleanFieldValue(raw?.company_name),
+      容量MW: cleanFieldValue(raw?.容量MW),
     };
     const body = { 项目名称: fields.项目名称 };
     // 预算走服务文档的标准键「预算_万元」；服务端对英文键 project_budget 的兼容转译在 v1.3 出现回归，不再依赖
     if (fields.project_budget) body.预算_万元 = fields.project_budget;
     if (fields.project_address) body.project_address = fields.project_address;
     if (fields.company_name) body.company_name = fields.company_name;
+    // 装机容量（MW）按服务端约定的中文键透传；字段越全区间越窄
+    if (fields.容量MW && Number(fields.容量MW) > 0) body.容量MW = Number(fields.容量MW);
     return { fields, body };
   }
 
@@ -259,6 +262,9 @@ function createPricePredictionService({ app, db, technicalPlanStore }) {
       ['业主单位', fields.company_name || '未提供'],
       [],
       ['预测中标价（万元）', data.预测中标价_万元],
+      ...(typeof data.核心区间下限_万元 === 'number' && typeof data.核心区间上限_万元 === 'number'
+        ? [['核心成交带 P25~P75（万元）', `${data.核心区间下限_万元} ~ ${data.核心区间上限_万元}`]]
+        : []),
       ['80% 置信区间下限（万元）', data.区间下限_万元],
       ['80% 置信区间上限（万元）', data.区间上限_万元],
       ['建议报价上限（万元）', data.建议报价上限_万元],
