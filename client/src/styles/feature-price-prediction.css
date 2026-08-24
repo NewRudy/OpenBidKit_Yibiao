@@ -273,6 +273,17 @@
   gap: 8px;
 }
 
+.price-prediction-similar-warning {
+  margin: 0;
+  padding: 8px 12px;
+  color: #92400e;
+  font-size: 12px;
+  line-height: 1.6;
+  background: rgba(254, 243, 199, 0.75);
+  border: 1px solid rgba(217, 119, 6, 0.35);
+  border-radius: 8px;
+}
+
 .price-prediction-similar > strong {
   color: var(--yb-text);
   font-size: 13px;

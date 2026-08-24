@@ -349,6 +349,18 @@ export default function PricePredictionPage() {
                 {similarProjects.length > 0 && (
                   <div className="price-prediction-similar">
                     <strong>最相似的历史项目（预测依据）</strong>
+                    {(() => {
+                      const prices = similarProjects
+                        .map((project) => project.中标价_万元)
+                        .filter((value) => typeof value === 'number' && value > 0);
+                      const spread = prices.length >= 2 ? Math.max(...prices) / Math.min(...prices) : null;
+                      if (spread === null || spread < 5) return null;
+                      return (
+                        <p className="price-prediction-similar-warning">
+                          {`⚠️ 相似项目最高价约为最低价的 ${spread.toFixed(1)} 倍，历史样本离散度过高，类比结果可靠性有限；若列表中存在同名/同类项目，建议以其为主要参考。`}
+                        </p>
+                      );
+                    })()}
                     <ul>
                       {similarProjects.map((project) => (
                         <li key={`${project.项目名称}-${project.开标日期 || ''}`}>
