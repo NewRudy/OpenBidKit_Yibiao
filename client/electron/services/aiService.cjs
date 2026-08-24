@@ -349,8 +349,20 @@ function saveGeneratedImage(app, image) {
   };
 }
 
+// 部分网关（自带 Web 前端的服务）对未知路径会返回 200 + HTML 页面而非 404，
+// 提前识别并给出明确提示，避免落到底层 JSON 解析错误；最常见的成因是 Base URL 缺少 /v1 路径。
+function assertNotHtmlResponse(response) {
+  const contentType = String(response.headers?.get?.('content-type') || '');
+  if (contentType.includes('text/html')) {
+    const error = new Error('接口返回了网页而不是 JSON，Base URL 很可能缺少 /v1 等路径前缀，请检查设置中的 Base URL');
+    markAiRequestError(error, { retryable: false });
+    throw error;
+  }
+}
+
 async function ensureOk(response, fallbackMessage, options = {}) {
   if (response.ok) {
+    assertNotHtmlResponse(response);
     return;
   }
 
@@ -372,6 +384,7 @@ async function fetchOpenAICompatibleImageResponse(baseUrl, apiKey, requestBody, 
   };
   const response = await sendRequest(requestBody);
   if (response.ok) {
+    assertNotHtmlResponse(response);
     return response;
   }
 
@@ -817,6 +830,7 @@ async function fetchChatCompletion(app, config, body, options = {}) {
 
 async function ensureTextAiResponseOk(response, fallbackMessage) {
   if (response.ok) {
+    assertNotHtmlResponse(response);
     return;
   }
 
