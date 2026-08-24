@@ -91,19 +91,34 @@ function createPricePredictionService({ app, db, technicalPlanStore }) {
     }
   }
 
+  // AI 解析失败时的占位词（"没有提及"/"未提供"等），不能当作真实字段值传给预测服务
+  const PLACEHOLDER_VALUES = /^(没有提及|未提及|未提供|无|未知|none|null)$/i;
+
+  function cleanFieldValue(value) {
+    const text = String(value || '').trim();
+    return PLACEHOLDER_VALUES.test(text) ? '' : text;
+  }
+
   function extractFieldsFromPlan() {
     const plan = technicalPlanStore.loadTechnicalPlan() || {};
-    const projectInfo = parseJsonContent(plan.bidAnalysisTasks?.projectInfo?.content);
-    const partAInfo = parseJsonContent(plan.bidAnalysisTasks?.partAInfo?.content);
+    // 仅采纳解析成功的任务内容；失败任务的占位内容不进表单
+    const taskContent = (taskId) => {
+      const task = plan.bidAnalysisTasks?.[taskId];
+      return task?.status === 'success' ? parseJsonContent(task.content) : null;
+    };
+    const projectInfo = taskContent('projectInfo');
+    const partAInfo = taskContent('partAInfo');
     return {
       fields: {
-        项目名称: String(projectInfo?.project_name || '').trim(),
-        项目编号: String(projectInfo?.project_number || '').trim(),
-        project_budget: String(projectInfo?.project_budget || '').trim(),
-        project_address: String(projectInfo?.project_address || '').trim(),
-        company_name: String(partAInfo?.company_name || '').trim(),
+        项目名称: cleanFieldValue(projectInfo?.project_name),
+        项目编号: cleanFieldValue(projectInfo?.project_number),
+        project_budget: cleanFieldValue(projectInfo?.project_budget),
+        project_address: cleanFieldValue(projectInfo?.project_address),
+        company_name: cleanFieldValue(partAInfo?.company_name),
       },
-      procurementMarkdown: String(plan.bidAnalysisTasks?.procurementList?.content || '').trim(),
+      procurementMarkdown: plan.bidAnalysisTasks?.procurementList?.status === 'success'
+        ? String(plan.bidAnalysisTasks.procurementList.content || '').trim()
+        : '',
     };
   }
 
@@ -119,10 +134,10 @@ function createPricePredictionService({ app, db, technicalPlanStore }) {
 
   function normalizeRequestFields(raw) {
     const fields = {
-      项目名称: String(raw?.项目名称 || '').trim(),
-      project_budget: String(raw?.project_budget || '').trim(),
-      project_address: String(raw?.project_address || '').trim(),
-      company_name: String(raw?.company_name || '').trim(),
+      项目名称: cleanFieldValue(raw?.项目名称),
+      project_budget: cleanFieldValue(raw?.project_budget),
+      project_address: cleanFieldValue(raw?.project_address),
+      company_name: cleanFieldValue(raw?.company_name),
     };
     const body = { 项目名称: fields.项目名称 };
     // 预算走服务文档的标准键「预算_万元」；服务端对英文键 project_budget 的兼容转译在 v1.3 出现回归，不再依赖

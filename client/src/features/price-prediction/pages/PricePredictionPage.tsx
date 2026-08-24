@@ -297,6 +297,12 @@ export default function PricePredictionPage() {
                   </p>
                 )}
 
+                {!prediction?.request?.project_budget && (
+                  <p className="price-prediction-anchor">
+                    未提供项目预算，本次预测未启用预算锚定，精度受限；预算是最强的参考信号，建议补填后重新预测。
+                  </p>
+                )}
+
                 {data.定价依据 && (
                   <div className="price-prediction-signals">
                     <div className="price-prediction-signals-head">
