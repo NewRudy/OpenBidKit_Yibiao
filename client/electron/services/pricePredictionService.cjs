@@ -34,6 +34,52 @@ function formatExportTimestamp() {
   return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
 }
 
+// 金额（元）转人民币大写，如 1030290 -> 壹佰零叁万零贰佰玖拾元整
+function numberToChineseCurrency(input) {
+  const amount = Math.round(Number(input) * 100) / 100;
+  if (!Number.isFinite(amount) || amount <= 0) return '';
+  const digit = ['零', '壹', '贰', '叁', '肆', '伍', '陆', '柒', '捌', '玖'];
+  const fraction = ['角', '分'];
+  const unit = [['元', '万', '亿'], ['', '拾', '佰', '仟']];
+  let n = amount;
+  let s = '';
+  for (let i = 0; i < fraction.length; i++) {
+    s += (digit[Math.floor(n * 10 * Math.pow(10, i)) % 10] + fraction[i]).replace(/零./, '');
+  }
+  s = s || '整';
+  n = Math.floor(n);
+  for (let i = 0; i < unit[0].length && n > 0; i++) {
+    let p = '';
+    for (let j = 0; j < unit[1].length && n > 0; j++) {
+      p = digit[n % 10] + unit[1][j] + p;
+      n = Math.floor(n / 10);
+    }
+    s = p.replace(/(零.)*零$/, '').replace(/^$/, '零') + unit[0][i] + s;
+  }
+  return s.replace(/(零.)*零元/, '元').replace(/(零.)+/g, '零').replace(/^整$/, '零元整');
+}
+
+function formatYuan(value) {
+  if (!Number.isFinite(value)) return '—';
+  return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+// 把用户输入的预算文本（"105.96"、"105.96万元"、"1,059,600元"）换算成元
+function parseAmountToYuan(raw) {
+  const text = String(raw ?? '').replace(/[,，\s]/g, '');
+  const m = text.match(/(\d+(?:\.\d+)?)/);
+  if (!m) return null;
+  const num = Number(m[1]);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  if (/元/.test(text) && !/万/.test(text)) return num;
+  return num * 10000;
+}
+
+function parseQty(text) {
+  const num = Number(String(text ?? '').replace(/[,，\s]/g, ''));
+  return Number.isFinite(num) && num > 0 ? num : null;
+}
+
 function createPricePredictionService({ app, db, technicalPlanStore }) {
   async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -52,6 +98,7 @@ function createPricePredictionService({ app, db, technicalPlanStore }) {
     return {
       fields: {
         项目名称: String(projectInfo?.project_name || '').trim(),
+        项目编号: String(projectInfo?.project_number || '').trim(),
         project_budget: String(projectInfo?.project_budget || '').trim(),
         project_address: String(projectInfo?.project_address || '').trim(),
         company_name: String(partAInfo?.company_name || '').trim(),
@@ -226,6 +273,151 @@ function createPricePredictionService({ app, db, technicalPlanStore }) {
     return rows;
   }
 
+  // ---- 预算表导出：投标报价一览表 + 分项报价明细表（参考政府采购投标（报价）一览表格式）----
+
+  // 从采购清单 markdown 表头识别各列位置；字段名不固定，按关键词模糊匹配
+  function findHeaderColumns(cells) {
+    const norm = cells.map((c) => String(c).replace(/\s/g, ''));
+    const findIdx = (keywords, exclude) => norm.findIndex(
+      (c) => keywords.some((k) => c.includes(k)) && !(exclude || []).some((k) => c.includes(k)),
+    );
+    const nameIdx = findIdx(['品名', '货物名称', '设备名称', '材料名称', '工作内容', '名称'], ['项目名称', '公司名称', '单位名称']);
+    const specIdx = findIdx(['规格型号', '规格', '技术参数', '参数要求', '服务标准']);
+    const unitIdx = findIdx(['单位'], ['单位名称']);
+    const qtyIdx = findIdx(['数量']);
+    const budgetIdx = findIdx(['限价', '预算金额', '预算价', '控制价']);
+    if (nameIdx < 0) return null;
+    // 缺数量/单位/规格的"表头"多半是「项目名称 | xxx」这类信息行，不当作清单表头
+    if (qtyIdx < 0 && unitIdx < 0 && specIdx < 0) return null;
+    return { nameIdx, specIdx, unitIdx, qtyIdx, budgetIdx };
+  }
+
+  const ITEM_NOISE_PATTERN = /(未找到|未提取到|未提供|^注[：:1-9]|^说明[：:]|^备注[：:])/;
+
+  function cellsToItem(cells, header) {
+    const get = (idx) => (header && Number.isInteger(idx) && idx >= 0 ? String(cells[idx] ?? '').trim() : '');
+    let item;
+    if (header) {
+      item = {
+        name: get(header.nameIdx),
+        spec: get(header.specIdx),
+        unit: get(header.unitIdx),
+        quantity: parseQty(get(header.qtyIdx)),
+        budget: header.budgetIdx >= 0 ? parseAmountToYuan(get(header.budgetIdx)) : null,
+      };
+    } else {
+      const nameCell = cells.map((c) => String(c).trim()).find((c) => c && !/^[\d.,%\s]+$/.test(c));
+      item = { name: nameCell || '', spec: '', unit: '', quantity: null, budget: null };
+    }
+    item.name = item.name.replace(/^[*＊]\s*/, '').trim();
+    if (!item.name || ITEM_NOISE_PATTERN.test(item.name)) return null;
+    // 跳过分组标题行（如「一、会议系统」且无任何数量/单位信息）
+    const isGroupHeading = /^[一二三四五六七八九十]+[、.]/.test(item.name) && !item.unit && item.quantity === null;
+    if (isGroupHeading) return null;
+    return item;
+  }
+
+  // 把 AI 整理的采购清单 markdown 解析为明细条目；优先表格，退化为编号列表行
+  function parseProcurementItems(markdown) {
+    const lines = String(markdown || '').split(/\r?\n/);
+    const items = [];
+    let header = null;
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) { header = null; continue; }
+      if (line.startsWith('|')) {
+        const cells = line.replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+        if (cells.every((c) => !c || /^:?-{2,}:?$/.test(c))) continue; // 表头分隔行
+        if (!header) {
+          const found = findHeaderColumns(cells);
+          if (found) { header = found; continue; }
+        } else {
+          const found = findHeaderColumns(cells);
+          if (found && found.nameIdx !== header.nameIdx) header = found; // 文档里有多个表格时跟随新表头
+        }
+        const item = cellsToItem(cells, header);
+        if (item) items.push(item);
+      } else {
+        header = null;
+        const listMatch = line.match(/^(?:\d+[.、)]|[-*•]|[一二三四五六七八九十]+[、.])\s*(.+)$/);
+        if (!listMatch) continue; // 普通段落不是条目
+        const item = cellsToItem([listMatch[1]], null);
+        if (item) items.push({ ...item, spec: '', unit: '', quantity: null, budget: null });
+      }
+    }
+    return items;
+  }
+
+  // 把预测总价分摊到明细条目：全部条目有限价/预算时按限价占比，否则均摊；
+  // 最后一条兜住四舍五入差额，保证合计恒等于预测总价。
+  function allocateDetailRows(items, totalYuan) {
+    const useBudget = items.length > 0 && items.every((i) => Number.isFinite(i.budget) && i.budget > 0);
+    const weights = items.map((i) => (useBudget ? i.budget : 1));
+    const sumWeight = weights.reduce((a, b) => a + b, 0) || 1;
+    let allocated = 0;
+    return items.map((item, i) => {
+      const amount = i === items.length - 1
+        ? Math.round((totalYuan - allocated) * 100) / 100
+        : Math.round((totalYuan * weights[i]) / sumWeight * 100) / 100;
+      if (i < items.length - 1) allocated += amount;
+      const quantity = item.quantity || 1;
+      return {
+        ...item,
+        quantity,
+        price: Math.round((amount / quantity) * 100) / 100,
+        amount,
+        estimatedBy: useBudget ? '限价占比' : '均摊',
+      };
+    });
+  }
+
+  function buildBidSummaryRows(fields, data) {
+    const totalYuan = Math.round(data.预测中标价_万元 * 10000 * 100) / 100;
+    const budgetYuan = parseAmountToYuan(fields.project_budget);
+    return [
+      ['投标报价一览表'],
+      [],
+      ['项目名称', fields.项目名称 || '—'],
+      ...(fields.项目编号 ? [['项目编号', fields.项目编号]] : []),
+      ['招标人/采购人', fields.company_name || '按招标文件要求'],
+      ['项目地点', fields.project_address || '按招标文件要求'],
+      ['预算价', budgetYuan ? `${formatYuan(budgetYuan)}` : '按招标文件要求'],
+      ['投标总报价（大写）', `人民币${numberToChineseCurrency(totalYuan)}`],
+      ['投标总报价（小写）', formatYuan(totalYuan)],
+      ['交货期/工期', '满足招标文件要求'],
+      ['质保期/服务承诺', '按照招标文件标准响应'],
+      [],
+      ['报价说明', '本报价为闭口含税总价，已包含人工、材料、运输、利润及国家规定的各项税费。'],
+      ['数据来源', `总报价由本地价格预测模型估算生成（相似历史项目类比 + 预算锚定），生成时间 ${new Date().toLocaleString('zh-CN')}；正式报价请以人工复核为准。`],
+    ];
+  }
+
+  function buildBidDetailRows(detailItems, data) {
+    const totalYuan = Math.round(data.预测中标价_万元 * 10000 * 100) / 100;
+    const rows = [
+      ['分项报价明细表'],
+      [],
+      ['序号', '品名/工作内容', '规格型号/服务标准', '单位', '数量', '单价（元）', '合价（元）'],
+    ];
+    detailItems.forEach((item, i) => {
+      rows.push([
+        i + 1,
+        item.name,
+        item.spec || '满足招标文件技术要求',
+        item.unit || '项',
+        item.quantity,
+        item.price.toFixed(3),
+        item.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+      ]);
+    });
+    rows.push(['总计', '—', '—', '—', '—', '—', formatYuan(totalYuan)]);
+    rows.push([]);
+    rows.push(['说明', `分项单价由预测总报价按${detailItems[0]?.estimatedBy === '限价占比' ? '清单限价占比' : '均摊'}估算生成（预测服务暂不支持逐项定价），仅供参考，正式报价前请人工调整。`]);
+    rows.push(['盖章', '（电子公章）']);
+    rows.push(['制表日期', new Date().toLocaleDateString('zh-CN')]);
+    return rows;
+  }
+
   async function exportBudgetTable({ fields, result, procurementMarkdown, actualWonPriceWan, actualBidPriceWan } = {}) {
     if (!result?.预测中标价_万元 || !fields?.项目名称) {
       return { success: false, message: '缺少预测结果，无法导出预算表' };
@@ -240,10 +432,38 @@ function createPricePredictionService({ app, db, technicalPlanStore }) {
       return { success: false, canceled: true, message: '已取消导出' };
     }
 
+    // 前端 payload 不含项目编号，现场从技术方案解析结果补充（用户在表单里改过的字段以前端为准）
+    const planFields = extractFieldsFromPlan();
+    const exportFields = {
+      ...planFields.fields,
+      ...Object.fromEntries(Object.entries(fields || {}).filter(([, v]) => v !== undefined && v !== null && String(v).trim() !== '')),
+      项目名称: fields.项目名称,
+    };
+
+    const totalYuan = Math.round(result.预测中标价_万元 * 10000 * 100) / 100;
     const workbook = XLSX.utils.book_new();
-    const summarySheet = XLSX.utils.aoa_to_sheet(buildSummaryRows(fields, result, { actualWonPriceWan, actualBidPriceWan }));
-    summarySheet['!cols'] = [{ wch: 24 }, { wch: 60 }];
-    XLSX.utils.book_append_sheet(workbook, summarySheet, '概算汇总');
+
+    // Sheet1：投标报价一览表（总价 + 大小写，对外格式）
+    const summarySheet = XLSX.utils.aoa_to_sheet(buildBidSummaryRows(exportFields, result));
+    summarySheet['!cols'] = [{ wch: 22 }, { wch: 66 }];
+    summarySheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 1 } }];
+    XLSX.utils.book_append_sheet(workbook, summarySheet, '投标报价一览表');
+
+    // Sheet2：分项报价明细表（条目来自采购清单解析，金额由预测总分摊估算）
+    const detailItems = allocateDetailRows(parseProcurementItems(procurementMarkdown), totalYuan);
+    const noteRowStart = 3 + detailItems.length + 2; // 标题+空行+表头+条目+总计 之后的第一行
+    const detailSheet = XLSX.utils.aoa_to_sheet(buildBidDetailRows(detailItems, result));
+    detailSheet['!cols'] = [{ wch: 6 }, { wch: 34 }, { wch: 30 }, { wch: 8 }, { wch: 8 }, { wch: 14 }, { wch: 16 }];
+    detailSheet['!merges'] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 6 } },
+      ...[noteRowStart, noteRowStart + 1, noteRowStart + 2].map((r) => ({ s: { r, c: 0 }, e: { r, c: 5 } })),
+    ];
+    XLSX.utils.book_append_sheet(workbook, detailSheet, '分项报价明细表');
+
+    // Sheet3：内部参考附页（预测明细依据），正式递交时可删除
+    const basisSheet = XLSX.utils.aoa_to_sheet(buildSummaryRows(exportFields, result, { actualWonPriceWan, actualBidPriceWan }));
+    basisSheet['!cols'] = [{ wch: 24 }, { wch: 60 }];
+    XLSX.utils.book_append_sheet(workbook, basisSheet, '附-预测汇总');
 
     const similarProjects = Array.isArray(result.相似项目) ? result.相似项目.slice(0, 5) : [];
     if (similarProjects.length) {
@@ -260,7 +480,7 @@ function createPricePredictionService({ app, db, technicalPlanStore }) {
       ];
       const similarSheet = XLSX.utils.aoa_to_sheet(similarRows);
       similarSheet['!cols'] = [{ wch: 48 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 10 }];
-      XLSX.utils.book_append_sheet(workbook, similarSheet, '相似历史项目参考');
+      XLSX.utils.book_append_sheet(workbook, similarSheet, '附-相似历史项目');
     }
 
     const procurement = String(procurementMarkdown || '').trim();
@@ -268,7 +488,7 @@ function createPricePredictionService({ app, db, technicalPlanStore }) {
       const procurementRows = [['采购清单原文（来自招标文件解析）'], [], ...procurement.split('\n').map((line) => [line])];
       const procurementSheet = XLSX.utils.aoa_to_sheet(procurementRows);
       procurementSheet['!cols'] = [{ wch: 100 }];
-      XLSX.utils.book_append_sheet(workbook, procurementSheet, '采购清单原文');
+      XLSX.utils.book_append_sheet(workbook, procurementSheet, '附-采购清单原文');
     }
 
     try {

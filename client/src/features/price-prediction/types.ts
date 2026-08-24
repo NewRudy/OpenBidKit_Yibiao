@@ -1,5 +1,6 @@
 export interface PricePredictionRequestFields {
   项目名称: string;
+  项目编号?: string;
   project_budget?: string;
   project_address?: string;
   company_name?: string;
