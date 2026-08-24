@@ -428,24 +428,25 @@ function createPricePredictionService({ app, db, technicalPlanStore }) {
 
   function buildBidDetailRowsWithFormat(format, detailItems, totalYuan) {
     const tableName = String(format?.table_name || '').trim() || '分项报价明细表';
-    const columnDefs = (Array.isArray(format?.columns) ? format.columns : [])
-      .map((col) => ({ name: String(col?.column_name || '').trim(), required: String(col?.is_required || '').includes('是') }))
-      .filter((col) => col.name);
-    const kinds = columnDefs.map((col) => classifyFormatColumn(col.name));
+    const columnNames = (Array.isArray(format?.columns) ? format.columns : [])
+      .map((col) => String(col?.column_name || '').trim())
+      .filter(Boolean);
+    const kinds = columnNames.map((name) => classifyFormatColumn(name));
 
     const rows = [
       [tableName],
       [],
-      columnDefs.map((col) => (col.required ? `*${col.name}` : col.name)),
+      // 列头逐字使用招标文件原文（是否必填等信息已在原文列名中体现），不做任何加工
+      [...columnNames],
     ];
     detailItems.forEach((item, i) => {
-      rows.push(columnDefs.map((_col, j) => {
+      rows.push(columnNames.map((_name, j) => {
         const filler = kinds[j] ? FORMAT_KIND_FILLERS[kinds[j]] : null;
         return filler ? (filler(item, i) ?? '') : '';
       }));
     });
     const totalIdx = kinds.indexOf('amount');
-    rows.push(columnDefs.map((_col, j) => {
+    rows.push(columnNames.map((_name, j) => {
       if (j === 0) return '总计';
       if (j === totalIdx) return formatYuan(totalYuan);
       return '—';
