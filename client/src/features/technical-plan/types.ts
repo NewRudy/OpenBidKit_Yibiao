@@ -310,6 +310,7 @@ export interface TechnicalPlanTenderSourceFile {
   markdownChars: number;
   contentHash: string;
   parserLabel?: string;
+  sourceDocxPath?: string;
   importedAt?: string;
   updatedAt: string;
 }
@@ -387,6 +388,7 @@ export interface TechnicalPlanState {
   contentGenerationPlans: ContentGenerationPlans;
   contentIllustrationPlan?: ContentIllustrationPlanState;
   contentGenerationRuntime?: ContentGenerationRuntimeState;
+  bidTemplateExists?: boolean;
   outlineData: OutlineData | null;
 }
 

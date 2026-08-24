@@ -28,6 +28,8 @@ interface OutlineEditPageProps {
   onCustomOutlineImported: (state: TechnicalPlanState) => void;
   onOutlineSaved: (request: SaveOutlineRequest) => Promise<void>;
   onOutlineSelectionSaved: (request: SaveOutlineSelectionRequest) => Promise<void>;
+  onOpenBidTemplate?: () => Promise<void>;
+  bidTemplateExists?: boolean;
   onSortGuardChange?: (guard: OutlineSortGuard | null) => void;
 }
 
@@ -352,6 +354,8 @@ function OutlineEditPage({
   onCustomOutlineImported,
   onOutlineSaved,
   onOutlineSelectionSaved,
+  onOpenBidTemplate,
+  bidTemplateExists = false,
   onSortGuardChange,
 }: OutlineEditPageProps) {
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
@@ -1300,6 +1304,11 @@ function OutlineEditPage({
           {awaitingOutlineSelection && (
             <button type="button" className="secondary-action" onClick={() => setSelectionDialogOpen(true)}>
               确认一级目录
+            </button>
+          )}
+          {bidTemplateExists && (
+            <button type="button" className="secondary-action" onClick={() => void onOpenBidTemplate?.()}>
+              打开投标模版
             </button>
           )}
           <button
