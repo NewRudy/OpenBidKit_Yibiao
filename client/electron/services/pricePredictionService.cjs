@@ -248,6 +248,22 @@ function createPricePredictionService({ app, db, technicalPlanStore }) {
       ['80% 置信区间上限（万元）', data.区间上限_万元],
       ['建议报价上限（万元）', data.建议报价上限_万元],
     ];
+    if (data.定价依据) {
+      rows.push(['定价依据', data.定价依据]);
+    }
+    const signals = data.定价信号明细;
+    if (signals && typeof signals === 'object') {
+      const signalEntries = [
+        ['联合模型', signals.联合模型_万元],
+        ['台账类比', signals.台账类比_万元],
+        ['市场类比', signals.市场类比_万元],
+      ].filter(([, value]) => typeof value === 'number');
+      const weights = (signals.权重 && typeof signals.权重 === 'object') ? signals.权重 : {};
+      for (const [name, value] of signalEntries) {
+        const weightKey = Object.keys(weights).find((key) => key.startsWith(name));
+        rows.push([`定价信号-${name}（万元）`, weightKey ? `${value}（权重 ${weights[weightKey]}）` : value]);
+      }
+    }
     if (actual.actualWonPriceWan !== null && actual.actualWonPriceWan !== undefined) {
       rows.push(['实际中标价（万元，开标回填）', actual.actualWonPriceWan]);
     }

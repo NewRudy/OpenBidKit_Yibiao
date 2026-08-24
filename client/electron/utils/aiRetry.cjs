@@ -87,6 +87,19 @@ function isFetchNetworkError(error) {
 
 function markAiRequestError(error, options = {}) {
   const target = error instanceof Error ? error : new Error(String(error || 'AI 请求失败'));
+
+  // 模型上下文窗口超限时 API 返回英文原文，转成可操作的中文提示（保留原始错误为 cause）
+  const rawMessage = String(target?.message || '');
+  if (/maximum context length|context length exceeded|reduce the length of the input prompt/i.test(rawMessage)) {
+    const contextError = new Error('内容超过了当前模型的上下文窗口。请到「设置 → 文本模型 → 上下文长度限制」把数值调小后重新执行（经验公式：不超过模型 tokens 数 × 1.4，如 128K 窗口的模型填 180000）');
+    contextError.cause = target;
+    return finalizeAiRequestError(contextError, options);
+  }
+
+  return finalizeAiRequestError(target, options);
+}
+
+function finalizeAiRequestError(target, options) {
   target.isAiRequestError = true;
 
   if (Object.prototype.hasOwnProperty.call(options, 'retryable')) {

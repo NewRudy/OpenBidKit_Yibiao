@@ -22,11 +22,21 @@ export interface PricePredictionSimilarProject {
   相似度?: number;
 }
 
+// 融合定价的分路信号（服务端 v1.4+「模型+双池类比」），契约仍在演进，字段宽松处理
+export interface PricePredictionSignalDetail {
+  联合模型_万元?: number;
+  台账类比_万元?: number;
+  市场类比_万元?: number;
+  权重?: Record<string, number>;
+}
+
 export interface PricePredictionData {
   预测中标价_万元: number;
   区间下限_万元: number;
   区间上限_万元: number;
   建议报价上限_万元: number;
+  定价依据?: string;
+  定价信号明细?: PricePredictionSignalDetail;
   预算锚定?: {
     预算_万元: number;
     折扣率先验?: number;

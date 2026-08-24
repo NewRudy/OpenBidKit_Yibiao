@@ -297,6 +297,47 @@ export default function PricePredictionPage() {
                   </p>
                 )}
 
+                {data.定价依据 && (
+                  <div className="price-prediction-signals">
+                    <div className="price-prediction-signals-head">
+                      <strong>定价信号</strong>
+                      <em>{data.定价依据}</em>
+                    </div>
+                    {(() => {
+                      const signals = data.定价信号明细;
+                      if (!signals) return null;
+                      const rows: Array<{ name: string; value: number }> = [];
+                      if (typeof signals.联合模型_万元 === 'number') rows.push({ name: '联合模型', value: signals.联合模型_万元 });
+                      if (typeof signals.台账类比_万元 === 'number') rows.push({ name: '台账类比', value: signals.台账类比_万元 });
+                      if (typeof signals.市场类比_万元 === 'number') rows.push({ name: '市场类比', value: signals.市场类比_万元 });
+                      const weights = signals.权重 || {};
+                      const weightOf = (name: string) => {
+                        const match = Object.entries(weights).find(([key]) => key.startsWith(name));
+                        return match && typeof match[1] === 'number' ? match[1] : null;
+                      };
+                      if (!rows.length) return null;
+                      return (
+                        <ul>
+                          {rows.map((row) => {
+                            const weight = weightOf(row.name);
+                            return (
+                              <li key={row.name}>
+                                <span className="price-prediction-signal-name">{row.name}</span>
+                                <span className="price-prediction-signal-value">{`${row.value.toLocaleString('zh-CN', { maximumFractionDigits: 1 })} 万元`}</span>
+                                {weight !== null && (
+                                  <span className="price-prediction-signal-weight" title={`权重 ${(weight * 100).toFixed(0)}%`}>
+                                    <i style={{ width: `${Math.round(Math.min(Math.max(weight, 0), 1) * 100)}%` }} />
+                                  </span>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      );
+                    })()}
+                  </div>
+                )}
+
                 {features.length > 0 && (
                   <div className="price-prediction-features">
                     {features.map(([key, value]) => (
@@ -314,7 +355,7 @@ export default function PricePredictionPage() {
                           <span className="price-prediction-similar-name" title={project.项目名称}>{project.项目名称}</span>
                           <span>{project.中标价_万元.toLocaleString('zh-CN', { maximumFractionDigits: 1 })} 万元</span>
                           <span>{project.开标日期 || '—'}</span>
-                          {typeof project.相似度 === 'number' && <span>{`相似度 ${(project.相似度 * 100).toFixed(0)}%`}</span>}
+                          {typeof project.相似度 === 'number' && <span>{`相似度 ${project.相似度 <= 1 ? `${(project.相似度 * 100).toFixed(0)}%` : project.相似度.toFixed(2)}`}</span>}
                         </li>
                       ))}
                     </ul>
